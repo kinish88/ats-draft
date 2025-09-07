@@ -101,9 +101,11 @@ async function loadLogos(): Promise<LogoMap> {
 
 /* --------------------------------- cells ---------------------------------- */
 
-function TinyLogo({ url, alt }: { url | null | undefined: string; alt: string }) {
+type TinyLogoProps = { url?: string | null; alt: string };
+
+function TinyLogo({ url, alt }: TinyLogoProps) {
   if (!url) return <span className="inline-block w-4 h-4 mr-2 align-middle" />;
-  // We stick with <img> to keep lint quiet in prod builds without touching next.config
+  // We stick with <img> to avoid next/image warnings for now
   return (
     <img
       src={url}
@@ -114,6 +116,7 @@ function TinyLogo({ url, alt }: { url | null | undefined: string; alt: string })
     />
   );
 }
+
 
 function ScoreCell({
   home,
