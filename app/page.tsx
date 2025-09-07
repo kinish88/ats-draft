@@ -1,9 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 
-/** ---------- Types returned by our RPCs ---------- */
+/** ---------- Types ---------- */
 type GameRow = {
   game_id: number;
   home: string;
@@ -40,6 +41,22 @@ type OUPick = {
 };
 
 type TotalsRow = { game_id: number; home: string; away: string; total_line: number };
+type TurnRow = { pick_number: number; display_name: string; email: string };
+
+type MakePickResult = {
+  ok: boolean;
+  message: string | null;
+  new_pick_id: number | null;
+  new_pick_number: number | null;
+  next_pick_number: number | null;
+  next_player_name: string | null;
+};
+
+type MakeOUPickResult = {
+  ok: boolean;
+  message: string | null;
+  new_ou_pick_id: number | null;
+};
 
 const YEAR = 2025;
 const WEEK = 1;
@@ -119,12 +136,12 @@ function OUPickForm({
 /** ---------- Page ---------- */
 export default function DraftPage() {
   const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [turn, setTurn] = useState<{ pick_number: number; display_name: string; email: string } | null>(null);
+  const [turn, setTurn] = useState<TurnRow | null>(null);
 
   const [games, setGames] = useState<GameRow[]>([]);
   const [picks, setPicks] = useState<PickRow[]>([]);
   const [ouPicks, setOUPicks] = useState<OUPick[]>([]);
-  const [totals, setTotals] = useState<TotalsRow[]>([]); // for O/U form (optional)
+  const [totals, setTotals] = useState<TotalsRow[]>([]);
 
   const myTurn = useMemo(
     () => !!turn && userEmail?.toLowerCase() === turn.email?.toLowerCase(),
@@ -132,11 +149,9 @@ export default function DraftPage() {
   );
 
   async function loadAll() {
-    // auth
     const sess = await supabase.auth.getSession();
     setUserEmail(sess.data.session?.user.email ?? null);
 
-    // state
     const [gamesRes, picksRes, ouRes, turnRes] = await Promise.all([
       supabase.rpc('get_week_games_with_status', { p_year: YEAR, p_week: WEEK }),
       supabase.rpc('get_week_spread_picks_v2', { p_year: YEAR, p_week: WEEK }),
@@ -147,9 +162,11 @@ export default function DraftPage() {
     setGames((gamesRes.data as GameRow[]) ?? []);
     setPicks((picksRes.data as PickRow[]) ?? []);
     setOUPicks((ouRes.data as OUPick[]) ?? []);
-    setTurn(((turnRes.data as any[]) ?? [])[0] ?? null);
 
-    // optional totals list (if the RPC exists)
+    const tData = (turnRes.data ?? null) as TurnRow[] | null;
+    setTurn(tData?.[0] ?? null);
+
+    // optional totals list (ignore errors if RPC not created)
     const totalsRes = await supabase.rpc('get_week_totals', { p_year: YEAR, p_week: WEEK });
     if (!totalsRes.error) setTotals((totalsRes.data as TotalsRow[]) ?? []);
   }
@@ -174,10 +191,8 @@ export default function DraftPage() {
   }, []);
 
   async function pick(home: string, away: string, team: string) {
-    if (!userEmail) {
-      alert('Please log in');
-      return;
-    }
+    if (!userEmail) { alert('Please log in'); return; }
+
     const { data, error } = await supabase.rpc('make_pick_by_teams', {
       p_player_email: userEmail,
       p_year: YEAR,
@@ -187,16 +202,18 @@ export default function DraftPage() {
       p_pick_short: team,
     });
 
-    if (error) alert(error.message);
-    else if (data && (data as any)[0]?.ok === false) alert((data as any)[0]?.message);
+    if (error) {
+      alert(error.message);
+    } else {
+      const res = (data as MakePickResult[] | null)?.[0];
+      if (res && res.ok === false) alert(res.message ?? 'Pick not allowed');
+    }
     await loadAll();
   }
 
   async function submitOU(home: string, away: string, side: 'over' | 'under') {
-    if (!userEmail) {
-      alert('Please log in');
-      return;
-    }
+    if (!userEmail) { alert('Please log in'); return; }
+
     const { data, error } = await supabase.rpc('make_ou_pick_by_teams', {
       p_player_email: userEmail,
       p_year: YEAR,
@@ -205,8 +222,13 @@ export default function DraftPage() {
       p_away_short: away,
       p_pick_side: side,
     });
-    if (error) alert(error.message);
-    else if (data && (data as any)[0]?.ok === false) alert((data as any)[0]?.message);
+
+    if (error) {
+      alert(error.message);
+    } else {
+      const res = (data as MakeOUPickResult[] | null)?.[0];
+      if (res && res.ok === false) alert(res.message ?? 'O/U not allowed');
+    }
     await loadAll();
   }
 
@@ -217,15 +239,10 @@ export default function DraftPage() {
         <div className="text-sm">
           {userEmail ? (
             <>
-              Signed in as <b>{userEmail}</b> •{' '}
-              <a className="underline" href="/login">
-                Switch
-              </a>
+              Signed in as <b>{userEmail}</b> • <Link className="underline" href="/login">Switch</Link>
             </>
           ) : (
-            <a className="underline" href="/login">
-              Login
-            </a>
+            <Link className="underline" href="/login">Login</Link>
           )}
         </div>
       </header>
@@ -301,53 +318,36 @@ export default function DraftPage() {
               <div>{p.picker}</div>
               <div className="flex items-center gap-2">
                 {p.picked_logo_url && (
-                  <img
-                    src={p.picked_logo_url}
-                    alt={p.picked_team}
-                    className="h-5 w-5 object-contain"
-                  />
+                  <img src={p.picked_logo_url} alt={p.picked_team} className="h-5 w-5 object-contain" />
                 )}
                 <span>{p.picked_team}</span>
               </div>
               <div className="col-span-2">{p.matchup}</div>
               <div>{p.spread_at_pick}</div>
-              <div>
-                <ResultPill colour={p.colour} text={p.result} />
-              </div>
+              <div><ResultPill colour={p.colour} text={p.result} /></div>
             </div>
           ))}
         </div>
       </section>
 
       {/* O/U form (optional) */}
-      {userEmail && totals.length > 0 && (
-        <OUPickForm games={totals} onSubmit={submitOU} />
-      )}
+      {userEmail && totals.length > 0 && <OUPickForm games={totals} onSubmit={submitOU} />}
 
       {/* O/U picks list */}
       <section>
         <h2 className="text-xl font-semibold mb-2">O/U Tie-breakers</h2>
         <div className="space-y-1">
           {ouPicks.map((p) => (
-            <div
-              key={`${p.picker}-${p.matchup}`}
-              className="grid grid-cols-6 gap-2 text-sm p-2 border rounded items-center"
-            >
+            <div key={`${p.picker}-${p.matchup}`} className="grid grid-cols-6 gap-2 text-sm p-2 border rounded items-center">
               <div>{p.picker}</div>
               <div className="col-span-2 flex items-center gap-2">
-                {p.home_logo_url && (
-                  <img src={p.home_logo_url} alt="home" className="h-5 w-5 object-contain" />
-                )}
+                {p.home_logo_url && <img src={p.home_logo_url} alt="home" className="h-5 w-5 object-contain" />}
                 <span>{p.matchup}</span>
-                {p.away_logo_url && (
-                  <img src={p.away_logo_url} alt="away" className="h-5 w-5 object-contain" />
-                )}
+                {p.away_logo_url && <img src={p.away_logo_url} alt="away" className="h-5 w-5 object-contain" />}
               </div>
               <div className="uppercase">{p.pick_side}</div>
               <div>{p.total_at_pick}</div>
-              <div>
-                <ResultPill colour={p.colour} text={p.result} />
-              </div>
+              <div><ResultPill colour={p.colour} text={p.result} /></div>
             </div>
           ))}
         </div>
