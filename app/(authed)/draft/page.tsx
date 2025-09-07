@@ -34,6 +34,9 @@ type MakePickResult   = { ok: boolean; message: string | null };
 type MakeOUPickResult = { ok: boolean; message: string | null };
 
 const YEAR = 2025;
+const formatSigned = (v: number | null | undefined) =>
+  v === null || v === undefined ? 'n/a' : `${v > 0 ? '+' : ''}${v}`;
+
 
 function Spread({ v }: { v: number | null }) {
   if (v === null) return <span className="text-gray-400">n/a</span>;
@@ -187,7 +190,7 @@ export default function DraftPage() {
                 <span>{p.picked_team}</span>
               </div>
               <div className="col-span-2">{p.matchup}</div>
-              <div>{p.spread_at_pick}</div>
+              <div>{formatSigned(p.spread_at_pick)}</div>
               <div><ResultPill colour={p.colour} text={p.result} /></div>
             </div>
           ))}

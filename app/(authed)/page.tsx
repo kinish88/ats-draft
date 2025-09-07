@@ -51,6 +51,9 @@ type WeekSummaryRow = {
 };
 
 const YEAR = 2025;
+const formatSigned = (v: number | null | undefined) =>
+  v === null || v === undefined ? 'n/a' : `${v > 0 ? '+' : ''}${v}`;
+
 
 /** ---------- Small UI helpers ---------- */
 function ResultPill({ colour, text }: { colour: string; text: string }) {
@@ -195,7 +198,7 @@ export default function ScoreboardPage() {
                       <span className="text-gray-400">({p.matchup})</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span>{p.spread_at_pick}</span>
+                      <span>{formatSigned(p.spread_at_pick)}</span>
                       <ResultPill colour={p.colour} text={p.result} />
                     </div>
                   </div>
