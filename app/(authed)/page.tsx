@@ -24,10 +24,10 @@ type BoardRow = {
   game_id: number;
   home: string;
   away: string;
-  // lines (various DB shapes supported, we normalize in code)
+  // lines — various DB shapes supported; we normalize in code
   spread_home?: number | null;
   spread_away?: number | null;
-  spread?: number | null; // single line (home is usually negative)
+  spread?: number | null;
   // live/final
   live_home_score?: number | null;
   live_away_score?: number | null;
@@ -41,18 +41,21 @@ type BoardRow = {
 type SpreadPickRow = {
   pick_number: number;
   player_name: string;
-  team_short?: string;
-  opponent_short?: string;
-  home_short?: string;
-  away_short?: string;
+  // any of these may exist depending on your RPC
+  team_short?: string | null;
+  opponent_short?: string | null;
+  home_short?: string | null;
+  away_short?: string | null;
   spread?: number | null;
+  pick_spread?: number | null;
+  line?: number | null;
 };
 
 type OuPickRow = {
   player_name: string;
-  home_short?: string;
-  away_short?: string;
-  choice?: 'OVER' | 'UNDER' | string | null;
+  home_short?: string | null;
+  away_short?: string | null;
+  choice?: 'OVER' | 'UNDER' | 'O' | 'U' | string | null;
   total?: number | null;
 };
 
@@ -97,25 +100,40 @@ function keyPair(a: string, b: string) {
   return `${a}__${b}`;
 }
 
+// Pull the most useful score fields (live if present; else final)
+function scoresFromRow(row: GameRow | BoardRow | undefined) {
+  if (!row) return { hs: null as number | null, as: null as number | null, live: false, final: false };
+  const br = row as BoardRow;
+  const gr = row as GameRow;
+
+  // use ?? ONLY (no ||), so 0 is respected as a valid score
+  const hs = (br.live_home_score ?? gr.home_score) ?? null;
+  const as = (br.live_away_score ?? gr.away_score) ?? null;
+
+  const final = Boolean((br.is_final ?? gr.is_final) ?? null);
+  const live = Boolean(br.is_live && !br.is_final);
+
+  return { hs, as, live, final };
+}
+
 function resultForATS(
   g: GameRow | BoardRow | undefined,
   pickedTeam: string,
   spreadForPick: number | null
 ): 'win' | 'loss' | 'push' | 'pending' {
-  const hs = (g?.home_score ?? null) || (g as BoardRow | undefined)?.live_home_score ?? null;
-  const as = (g?.away_score ?? null) || (g as BoardRow | undefined)?.live_away_score ?? null;
-  const isFinal = Boolean((g as BoardRow | undefined)?.is_final ?? (g as GameRow | undefined)?.is_final);
-
-  if (hs == null || as == null || !isFinal) return 'pending';
+  const { hs, as, final } = scoresFromRow(g);
+  if (hs == null || as == null || !final) return 'pending';
 
   const s = spreadForPick ?? 0;
-  const diff =
-    pickedTeam === g?.home
-      ? hs - as
-      : pickedTeam === g?.away
-      ? as - hs
-      : 0;
+  // is picked team home or away?
+  const isHome = g?.home === pickedTeam;
+  const isAway = g?.away === pickedTeam;
+
+  if (!isHome && !isAway) return 'pending';
+
+  const diff = isHome ? hs - as : as - hs;
   const cover = diff + s;
+
   if (cover > 0) return 'win';
   if (cover < 0) return 'loss';
   return 'push';
@@ -126,11 +144,8 @@ function resultForOU(
   choice: 'OVER' | 'UNDER',
   total: number
 ): 'win' | 'loss' | 'push' | 'pending' {
-  const hs = (g?.home_score ?? null) || (g as BoardRow | undefined)?.live_home_score ?? null;
-  const as = (g?.away_score ?? null) || (g as BoardRow | undefined)?.live_away_score ?? null;
-  const isFinal = Boolean((g as BoardRow | undefined)?.is_final ?? (g as GameRow | undefined)?.is_final);
-
-  if (hs == null || as == null || !isFinal) return 'pending';
+  const { hs, as, final } = scoresFromRow(g);
+  if (hs == null || as == null || !final) return 'pending';
   const sum = hs + as;
   if (sum > total) return choice === 'OVER' ? 'win' : 'loss';
   if (sum < total) return choice === 'UNDER' ? 'win' : 'loss';
@@ -165,15 +180,8 @@ function StatusPill({ status }: { status: 'win' | 'loss' | 'push' | 'pending' })
   return <span className={`text-sm ${color}`}>{status}</span>;
 }
 
-function ScoreCell({
-  row,
-}: {
-  row: BoardRow;
-}) {
-  const hs = row.live_home_score ?? row.home_score ?? null;
-  const as = row.live_away_score ?? row.away_score ?? null;
-  const live = Boolean(row.is_live) && !row.is_final;
-
+function ScoreCell({ row }: { row: BoardRow }) {
+  const { hs, as, live } = scoresFromRow(row);
   if (hs == null || as == null) return <span className="opacity-50">—</span>;
   return (
     <span className={`tabular-nums ${live ? 'animate-pulse' : ''}`}>
@@ -243,6 +251,7 @@ export default function ScoreboardPage() {
             is_live: false,
           })) ?? [];
       }
+
       // normalize lines if DB sends a single "spread" (home negative)
       const normalized = boardRows.map((r) => {
         const homeLine =
@@ -285,27 +294,24 @@ export default function ScoreboardPage() {
       });
       const ouRows = (oup as OuPickRow[] | null) ?? [];
 
-      // ----- shape spread cards -----
+      // ----- shape spread cards (group by player) -----
       const byPlayer = new Map<string, PlayerCard>();
       for (const r of spreadRows) {
         const player = r.player_name;
+
+        // best-effort to find team/opponent
         const team =
-          r.team_short ??
-          (r.home_short && r.opponent_short ? r.home_short : '') ??
-          '';
+          (r.team_short ?? null) ??
+          (r.home_short && r.away_short ? r.home_short : null);
         const opp =
-          r.opponent_short ??
-          (r.home_short && r.opponent_short ? r.away_short ?? r.opponent_short : r.opponent_short ?? '') ??
-          '';
+          (r.opponent_short ?? null) ??
+          (r.home_short && r.away_short ? r.away_short : null);
 
-        const t = (team || '').toUpperCase();
-        const o = (opp || '').toUpperCase();
+        const t = (team ?? '').toUpperCase();
+        const o = (opp ?? '').toUpperCase();
 
-        const spreadVal =
-          toNum(r.spread) ??
-          toNum((r as unknown as Record<string, unknown>)['pick_spread']) ??
-          toNum((r as unknown as Record<string, unknown>)['line']) ??
-          null;
+        // spread could be under different names
+        const spreadVal = toNum(r.spread) ?? toNum(r.pick_spread) ?? toNum(r.line) ?? null;
 
         const g = byPair.get(keyPair(t, o));
         const res = resultForATS(g, t, spreadVal);
@@ -325,13 +331,14 @@ export default function ScoreboardPage() {
         const name = r.player_name;
         const home = (r.home_short ?? '').toUpperCase();
         const away = (r.away_short ?? '').toUpperCase();
-        const choice = (r.choice ?? 'OVER').toUpperCase() === 'UNDER' ? 'UNDER' : 'OVER';
+        const choiceRaw = (r.choice ?? 'OVER').toString().toUpperCase();
+        const choice: 'OVER' | 'UNDER' = choiceRaw === 'UNDER' || choiceRaw === 'U' ? 'UNDER' : 'OVER';
         const total = toNum(r.total) ?? 0;
 
         const g = byPair.get(keyPair(home, away));
-        const res = resultForOU(g, choice as 'OVER' | 'UNDER', total);
+        const res = resultForOU(g, choice, total);
 
-        ouByPlayer.set(name, { name, home, away, choice: choice as 'OVER' | 'UNDER', total, result: res });
+        ouByPlayer.set(name, { name, home, away, choice, total, result: res });
       }
       setOuCards(Array.from(ouByPlayer.values()).sort((a, b) => a.name.localeCompare(b.name)));
 
