@@ -1,9 +1,11 @@
 'use client';
+
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 
+/** -------------------- Types -------------------- **/
 type GameForScore = {
   game_id: number;
   home: string;
@@ -19,7 +21,7 @@ type GameForScore = {
 type WeekOption = { week_number: number };
 
 type AdminSpreadRow = {
-  pick_id: number; // BIGINT from DB
+  pick_id: number; // BIGINT in DB → number in TS
   pick_number: number;
   player: string;
   home_short: string;
@@ -36,16 +38,20 @@ type AdminOURow = {
   total_at_pick: number;
 };
 
+/** -------------------- Config -------------------- **/
 const YEAR = 2025;
 
+/** =================================================
+ *                 Admin Scores Page
+ *  ================================================= */
 export default function AdminScoresPage() {
   const router = useRouter();
 
-  // --- Admin guard ---
+  /** Admin guard */
   const [checkingAdmin, setCheckingAdmin] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
 
-  // --- Scores UI state ---
+  /** Scores UI state */
   const [week, setWeek] = useState<number>(1);
   const [weeks, setWeeks] = useState<number[]>([]);
   const [rows, setRows] = useState<GameForScore[]>([]);
@@ -53,46 +59,40 @@ export default function AdminScoresPage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [onlyPicked, setOnlyPicked] = useState<boolean>(true);
 
-  // --- Admin editors state ---
+  /** Admin editors state */
   const [spreadsAdmin, setSpreadsAdmin] = useState<AdminSpreadRow[]>([]);
   const [ouAdmin, setOuAdmin] = useState<AdminOURow[]>([]);
   const [spreadEdits, setSpreadEdits] = useState<Record<number, number>>({});
   const [ouSideEdits, setOuSideEdits] = useState<Record<string, 'over' | 'under'>>({});
   const [ouTotalEdits, setOuTotalEdits] = useState<Record<string, number>>({});
 
-  // Utility key for OU per row
   const ouKey = (r: AdminOURow) => `${r.player}|${r.home_short}|${r.away_short}`;
 
-  // --- Admin guard effect ---
+  /** -------------------- Admin Guard -------------------- **/
   useEffect(() => {
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
       const email = session?.user.email?.toLowerCase() ?? null;
       if (!email) { router.replace('/login'); return; }
 
-      // A) by email (change to your admin email)
-      const okByEmail = email === 'me@chrismcarthur.co.uk';
-
-      // B) by players.display_name === 'Kinish'
-      let okByDisplay = false;
-      if (!okByEmail) {
+      // Allow by email OR players.display_name === 'Kinish'
+      let ok = email === 'me@chrismcarthur.co.uk';
+      if (!ok) {
         const { data: player } = await supabase
           .from('players')
           .select('display_name')
           .eq('email', email)
           .maybeSingle();
-        okByDisplay = player?.display_name === 'Kinish';
+        ok = player?.display_name === 'Kinish';
       }
 
-      const ok = okByEmail || okByDisplay;
       setIsAdmin(ok);
       setCheckingAdmin(false);
-
       if (!ok) router.replace('/');
     })();
   }, [router]);
 
-  // --- Loaders ---
+  /** -------------------- Loaders -------------------- **/
   async function loadWeeks() {
     const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
     if (data) setWeeks((data as WeekOption[]).map(w => w.week_number));
@@ -112,14 +112,15 @@ export default function AdminScoresPage() {
       supabase.rpc('get_week_spread_picks_admin', { p_year: YEAR, p_week: w }),
       supabase.rpc('get_week_ou_picks_admin',     { p_year: YEAR, p_week: w }),
     ]);
+
     if (!spr.error && spr.data) {
       const list = spr.data as AdminSpreadRow[];
       setSpreadsAdmin(list);
-      // initialize spread edits
       const se: Record<number, number> = {};
       for (const r of list) se[r.pick_id] = r.spread_at_pick;
       setSpreadEdits(se);
     }
+
     if (!ou.error && ou.data) {
       const list = ou.data as AdminOURow[];
       setOuAdmin(list);
@@ -139,64 +140,73 @@ export default function AdminScoresPage() {
   useEffect(() => { if (isAdmin) loadWeekGames(week); }, [week, onlyPicked, isAdmin]);
   useEffect(() => { if (isAdmin) loadAdminEditors(week); }, [week, isAdmin]);
 
-  // --- Score editing ---
-  function updateRow(id: number, field: 'home_score' | 'away_score', value: number | null) {
-    setRows(prev => prev.map(r => (r.game_id === id ? { ...r, [field]: value } : r)));
+  /** -------------------- Secure API helpers -------------------- **/
+  async function getToken() {
+    const { data: { session} } = await supabase.auth.getSession();
+    return session?.access_token ?? '';
   }
 
+  /** -------------------- Save handlers (call your API routes) -------------------- **/
   async function saveScore(r: GameForScore) {
-    const hs = r.home_score ?? 0;
-    const as = r.away_score ?? 0;
+    const token = await getToken();
     setSavingId(r.game_id);
-    const { error } = await supabase.rpc('set_final_score', {
-      p_year: YEAR,
-      p_week_number: week,
-      p_home_short: r.home,
-      p_away_short: r.away,
-      p_home_score: hs,
-      p_away_score: as,
+    const res = await fetch('/api/admin/set-score', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        year: YEAR, week,
+        home: r.home, away: r.away,
+        home_score: r.home_score ?? 0,
+        away_score: r.away_score ?? 0,
+      }),
     });
     setSavingId(null);
-    if (error) alert(error.message);
-    else await loadWeekGames(week);
+    if (!res.ok) return alert(await res.text());
+    await loadWeekGames(week);
   }
 
-  // --- Admin spread editor save ---
   async function saveSpread(r: AdminSpreadRow, nextTeam: string) {
+    const token = await getToken();
     const nextSpread = spreadEdits[r.pick_id] ?? r.spread_at_pick;
-    const { error } = await supabase.rpc('admin_replace_spread_pick_by_id', {
-      p_pick_id: r.pick_id,                 // BIGINT/number
-      p_home_short: r.home_short,
-      p_away_short: r.away_short,
-      p_team_short: nextTeam,
-      p_spread: nextSpread,
+
+    const res = await fetch('/api/admin/set-spread', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        pick_id: r.pick_id,
+        home: r.home_short, away: r.away_short,
+        team: nextTeam, spread: nextSpread,
+      }),
     });
-    if (error) alert(error.message);
+    if (!res.ok) return alert(await res.text());
     await Promise.all([loadWeekGames(week), loadAdminEditors(week)]);
   }
 
-  // --- Admin O/U editor save (upsert) ---
   async function saveOU(r: AdminOURow) {
+    const token = await getToken();
     const key = ouKey(r);
     const nextSide  = ouSideEdits[key]  ?? r.pick_side;
     const nextTotal = ouTotalEdits[key] ?? r.total_at_pick;
-    const { error } = await supabase.rpc('admin_set_ou_pick', {
-      p_year: YEAR,
-      p_week: week,
-      p_player_display: r.player,
-      p_home_short: r.home_short,
-      p_away_short: r.away_short,
-      p_pick_side: nextSide,
-      p_total: nextTotal,
+
+    const res = await fetch('/api/admin/set-ou', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        year: YEAR, week,
+        player: r.player,
+        home: r.home_short, away: r.away_short,
+        pick_side: nextSide, total: nextTotal,
+      }),
     });
-    if (error) alert(error.message);
-    await Promise.all([loadWeekGames(week), loadAdminEditors(week)]);
+    if (!res.ok) return alert(await res.text());
+    await loadAdminEditors(week);
   }
 
-  // --- Early returns after hooks ---
+  /** -------------------- Early returns -------------------- **/
   if (checkingAdmin) return <div className="max-w-5xl mx-auto p-6">Checking access…</div>;
   if (!isAdmin) return null;
 
+  /** -------------------- Render -------------------- **/
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-8">
       <header className="flex items-center justify-between">
@@ -247,7 +257,11 @@ export default function AdminScoresPage() {
                       type="number"
                       className="w-16 border rounded p-1 bg-transparent"
                       value={r.home_score ?? ''}
-                      onChange={(e) => updateRow(r.game_id, 'home_score', e.target.value === '' ? null : parseInt(e.target.value, 10))}
+                      onChange={(e) =>
+                        setRows(prev => prev.map(x => x.game_id === r.game_id
+                          ? { ...x, home_score: e.target.value === '' ? null : parseInt(e.target.value, 10) }
+                          : x))
+                      }
                     />
                   </div>
                   <div className="flex items-center gap-2">
@@ -256,7 +270,11 @@ export default function AdminScoresPage() {
                       type="number"
                       className="w-16 border rounded p-1 bg-transparent"
                       value={r.away_score ?? ''}
-                      onChange={(e) => updateRow(r.game_id, 'away_score', e.target.value === '' ? null : parseInt(e.target.value, 10))}
+                      onChange={(e) =>
+                        setRows(prev => prev.map(x => x.game_id === r.game_id
+                          ? { ...x, away_score: e.target.value === '' ? null : parseInt(e.target.value, 10) }
+                          : x))
+                      }
                     />
                   </div>
                   <div className="text-right">
