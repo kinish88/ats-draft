@@ -150,7 +150,7 @@ export default function AdminScoresPage() {
   async function saveScore(r: GameForScore) {
     const token = await getToken();
     setSavingId(r.game_id);
-    const res = await fetch('/api/admin/set-score', {
+    const res = await fetch('/api/set-score', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
@@ -169,7 +169,7 @@ export default function AdminScoresPage() {
     const token = await getToken();
     const nextSpread = spreadEdits[r.pick_id] ?? r.spread_at_pick;
 
-    const res = await fetch('/api/admin/set-spread', {
+    const res = await fetch('/api/set-spread', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
@@ -188,7 +188,7 @@ export default function AdminScoresPage() {
     const nextSide  = ouSideEdits[key]  ?? r.pick_side;
     const nextTotal = ouTotalEdits[key] ?? r.total_at_pick;
 
-    const res = await fetch('/api/admin/set-ou', {
+    const res = await fetch('/api/set-ou', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({
