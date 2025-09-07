@@ -13,16 +13,32 @@ type Team = { short_name: string; logo_url: string | null };
 
 type GameRow = {
   game_id: number;
-  home: string;     // short
-  away: string;     // short
+  home: string; // short
+  away: string; // short
   home_score: number | null;
   away_score: number | null;
   is_final?: boolean | null;
 };
 
+type BoardRow = {
+  game_id: number;
+  home: string;
+  away: string;
+  // lines (various DB shapes supported, we normalize in code)
+  spread_home?: number | null;
+  spread_away?: number | null;
+  spread?: number | null; // single line (home is usually negative)
+  // live/final
+  live_home_score?: number | null;
+  live_away_score?: number | null;
+  home_score?: number | null;
+  away_score?: number | null;
+  is_live?: boolean | null;
+  is_final?: boolean | null;
+  kickoff?: string | null;
+};
+
 type SpreadPickRow = {
-  // shape from get_week_spread_picks_admin
-  pick_id?: string;
   pick_number: number;
   player_name: string;
   team_short?: string;
@@ -70,8 +86,9 @@ function plus(num: number | null | undefined): string {
 function toNum(x: unknown): number | null {
   if (x == null) return null;
   if (typeof x === 'number' && Number.isFinite(x)) return x;
-  if (typeof x === 'string' && x.trim() !== '' && !Number.isNaN(Number(x))) {
-    return Number(x);
+  if (typeof x === 'string') {
+    const n = Number(x);
+    return Number.isFinite(n) ? n : null;
   }
   return null;
 }
@@ -81,18 +98,23 @@ function keyPair(a: string, b: string) {
 }
 
 function resultForATS(
-  g: GameRow | undefined,
+  g: GameRow | BoardRow | undefined,
   pickedTeam: string,
   spreadForPick: number | null
 ): 'win' | 'loss' | 'push' | 'pending' {
-  if (!g || !g.home_score || !g.away_score || !g.is_final) return 'pending';
+  const hs = (g?.home_score ?? null) || (g as BoardRow | undefined)?.live_home_score ?? null;
+  const as = (g?.away_score ?? null) || (g as BoardRow | undefined)?.live_away_score ?? null;
+  const isFinal = Boolean((g as BoardRow | undefined)?.is_final ?? (g as GameRow | undefined)?.is_final);
+
+  if (hs == null || as == null || !isFinal) return 'pending';
+
   const s = spreadForPick ?? 0;
   const diff =
-    pickedTeam === g.home
-      ? g.home_score - g.away_score
-      : pickedTeam === g.away
-      ? g.away_score - g.home_score
-      : 0; // fallback
+    pickedTeam === g?.home
+      ? hs - as
+      : pickedTeam === g?.away
+      ? as - hs
+      : 0;
   const cover = diff + s;
   if (cover > 0) return 'win';
   if (cover < 0) return 'loss';
@@ -100,12 +122,16 @@ function resultForATS(
 }
 
 function resultForOU(
-  g: GameRow | undefined,
+  g: GameRow | BoardRow | undefined,
   choice: 'OVER' | 'UNDER',
   total: number
 ): 'win' | 'loss' | 'push' | 'pending' {
-  if (!g || !g.home_score || !g.away_score || !g.is_final) return 'pending';
-  const sum = g.home_score + g.away_score;
+  const hs = (g?.home_score ?? null) || (g as BoardRow | undefined)?.live_home_score ?? null;
+  const as = (g?.away_score ?? null) || (g as BoardRow | undefined)?.live_away_score ?? null;
+  const isFinal = Boolean((g as BoardRow | undefined)?.is_final ?? (g as GameRow | undefined)?.is_final);
+
+  if (hs == null || as == null || !isFinal) return 'pending';
+  const sum = hs + as;
   if (sum > total) return choice === 'OVER' ? 'win' : 'loss';
   if (sum < total) return choice === 'UNDER' ? 'win' : 'loss';
   return 'push';
@@ -139,6 +165,23 @@ function StatusPill({ status }: { status: 'win' | 'loss' | 'push' | 'pending' })
   return <span className={`text-sm ${color}`}>{status}</span>;
 }
 
+function ScoreCell({
+  row,
+}: {
+  row: BoardRow;
+}) {
+  const hs = row.live_home_score ?? row.home_score ?? null;
+  const as = row.live_away_score ?? row.away_score ?? null;
+  const live = Boolean(row.is_live) && !row.is_final;
+
+  if (hs == null || as == null) return <span className="opacity-50">—</span>;
+  return (
+    <span className={`tabular-nums ${live ? 'animate-pulse' : ''}`}>
+      {hs} — {as}
+    </span>
+  );
+}
+
 /* ================================ page ================================= */
 
 export default function ScoreboardPage() {
@@ -147,6 +190,7 @@ export default function ScoreboardPage() {
   const [cards, setCards] = useState<PlayerCard[]>([]);
   const [ouCards, setOuCards] = useState<OuCard[]>([]);
   const [logos, setLogos] = useState<Map<string, string | null>>(new Map());
+  const [board, setBoard] = useState<BoardRow[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [full, setFull] = useState<boolean>(false);
 
@@ -174,16 +218,57 @@ export default function ScoreboardPage() {
       (tms as Team[] | null)?.forEach((t) => logosMap.set(t.short_name, t.logo_url ?? null));
       setLogos(logosMap);
 
-      // games (for final scores + is_final)
-      const { data: games } = await supabase.rpc('get_week_games_for_scoring', {
+      // games (full board + lines if available)
+      let boardRows: BoardRow[] = [];
+      const { data: boardTry } = await supabase.rpc('get_week_games_with_status', {
         p_year: YEAR,
         p_week: week,
       });
-      const gameList = (games as GameRow[] | null) ?? [];
-      const byPair = new Map<string, GameRow>();
-      for (const g of gameList) {
+      if (boardTry && Array.isArray(boardTry)) {
+        boardRows = boardTry as BoardRow[];
+      } else {
+        // fallback: no lines, just scores
+        const { data: games } = await supabase.rpc('get_week_games_for_scoring', {
+          p_year: YEAR,
+          p_week: week,
+        });
+        boardRows =
+          (games as GameRow[] | null)?.map((g) => ({
+            game_id: g.game_id,
+            home: g.home,
+            away: g.away,
+            home_score: g.home_score,
+            away_score: g.away_score,
+            is_final: g.is_final ?? null,
+            is_live: false,
+          })) ?? [];
+      }
+      // normalize lines if DB sends a single "spread" (home negative)
+      const normalized = boardRows.map((r) => {
+        const homeLine =
+          toNum((r as Record<string, unknown>)['spread_home']) ??
+          toNum((r as Record<string, unknown>)['home_spread']) ??
+          toNum((r as Record<string, unknown>)['line_home']) ??
+          (toNum((r as Record<string, unknown>)['spread']) !== null
+            ? toNum((r as Record<string, unknown>)['spread'])
+            : null);
+
+        const awayLine =
+          homeLine !== null
+            ? -homeLine
+            : toNum((r as Record<string, unknown>)['spread_away']) ??
+              toNum((r as Record<string, unknown>)['away_spread']) ??
+              toNum((r as Record<string, unknown>)['line_away']);
+
+        return { ...r, spread_home: homeLine, spread_away: awayLine };
+      });
+      setBoard(normalized);
+
+      // quick map to compute results for picks
+      const byPair = new Map<string, BoardRow>();
+      for (const g of normalized) {
         byPair.set(keyPair(g.home, g.away), g);
-        byPair.set(keyPair(g.away, g.home), g); // allow either order lookups
+        byPair.set(keyPair(g.away, g.home), g);
       }
 
       // spread picks (group later)
@@ -206,19 +291,16 @@ export default function ScoreboardPage() {
         const player = r.player_name;
         const team =
           r.team_short ??
-          (r.home_short && r.opponent_short
-            ? r.home_short // we'll fix orientation below; we only need the picked team
-            : '');
+          (r.home_short && r.opponent_short ? r.home_short : '') ??
+          '';
         const opp =
           r.opponent_short ??
-          (r.home_short && r.opponent_short
-            ? r.away_short ?? r.opponent_short
-            : r.opponent_short ?? '');
+          (r.home_short && r.opponent_short ? r.away_short ?? r.opponent_short : r.opponent_short ?? '') ??
+          '';
 
         const t = (team || '').toUpperCase();
         const o = (opp || '').toUpperCase();
 
-        // prefer explicit spread field; fallbacks if your RPC returns a different name
         const spreadVal =
           toNum(r.spread) ??
           toNum((r as unknown as Record<string, unknown>)['pick_spread']) ??
@@ -235,11 +317,6 @@ export default function ScoreboardPage() {
       const cardsArr = Array.from(byPlayer.values()).sort((a, b) =>
         a.name.localeCompare(b.name)
       );
-      // keep each player's picks in pick-number order if we have it
-      cardsArr.forEach((c) => {
-        // nothing to sort reliably without pick_number in this context; leave as is
-        // (your RPC already returns in pick order)
-      });
       setCards(cardsArr);
 
       // ----- shape O/U cards -----
@@ -343,6 +420,48 @@ export default function ScoreboardPage() {
           </div>
         )}
       </section>
+
+      {/* FULL SCOREBOARD (toggle) */}
+      {full && (
+        <section>
+          <h2 className="text-lg font-medium mb-2">Week {week} Scoreboard</h2>
+          {loading ? (
+            <div className="text-sm text-gray-400">Loading…</div>
+          ) : (
+            <div className="space-y-2">
+              {board.map((r) => (
+                <div key={r.game_id} className="border rounded p-2">
+                  <div className="grid grid-cols-5 gap-2 items-center">
+                    {/* left (home) */}
+                    <div className="flex items-center gap-2">
+                      <TinyLogo url={logos.get(r.home)} alt={r.home} />
+                      <span className="font-medium">{r.home}</span>
+                      <span className="text-sm opacity-80">{plus(r.spread_home ?? null)}</span>
+                    </div>
+
+                    {/* center */}
+                    <div className="col-span-2 text-center">
+                      <span className="text-sm opacity-70">v</span>
+                    </div>
+
+                    {/* score */}
+                    <div className="text-center">
+                      <ScoreCell row={r} />
+                    </div>
+
+                    {/* right (away) */}
+                    <div className="flex items-center justify-end gap-2">
+                      <span className="text-sm opacity-80">{plus(r.spread_away ?? null)}</span>
+                      <span className="font-medium">{r.away}</span>
+                      <TinyLogo url={logos.get(r.away)} alt={r.away} />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       {/* O/U tie-breakers */}
       <section>
