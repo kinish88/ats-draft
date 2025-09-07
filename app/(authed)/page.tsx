@@ -173,46 +173,56 @@ export default function ScoreboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [week, showFull]);
 
-  /* -------- Realtime live-score updates -------- */
-  useEffect(() => {
-    if (!showFull || games.length === 0) return;
+// -------- Realtime live-score updates --------
+useEffect(() => {
+  if (!showFull || games.length === 0) return;
 
-    const channel = supabase
-      .channel('live-scores')
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'games' },
-        (payload: RealtimePostgresChangesPayload<{
-          id: number;
-          live_home_score: number | null;
-          live_away_score: number | null;
-          is_live: boolean | null;
-          is_final: boolean | null;
-        }>) => {
-          const row = payload.new;
-          if (!row || !gameIdSet.has(row.id)) return;
+  type GameUpdateRow = Partial<{
+    id: number;
+    live_home_score: number | null;
+    live_away_score: number | null;
+    is_live: boolean | null;
+    is_final: boolean | null;
+  }>;
 
-          setGames((prev) =>
-            prev.map((g) =>
-              g.game_id === row.id
-                ? {
-                    ...g,
-                    live_home_score: row.live_home_score,
-                    live_away_score: row.live_away_score,
-                    is_live: row.is_live,
-                    is_final: row.is_final,
-                  }
-                : g,
-            ),
-          );
-        },
-      );
+  const channel = supabase
+    .channel('live-scores')
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'games' },
+      (payload) => {
+        // payload.new can be {} | Row — so narrow it
+        const row = payload.new as GameUpdateRow;
+        const id = row?.id;
 
-    channel.subscribe();
-    return () => {
-      channel.unsubscribe();
-    };
-  }, [showFull, gameIdSet, games.length]);
+        if (typeof id !== 'number' || !gameIdSet.has(id)) return;
+
+        setGames((prev) =>
+          prev.map((g) =>
+            g.game_id === id
+              ? {
+                  ...g,
+                  live_home_score:
+                    row.live_home_score ?? g.live_home_score ?? null,
+                  live_away_score:
+                    row.live_away_score ?? g.live_away_score ?? null,
+                  is_live:
+                    row.is_live ?? (g.is_live ?? null),
+                  is_final:
+                    row.is_final ?? (g.is_final ?? null),
+                }
+              : g,
+          ),
+        );
+      },
+    );
+
+  channel.subscribe();
+  return () => {
+    channel.unsubscribe();
+  };
+}, [showFull, gameIdSet, games.length]);
+
 
   /* ============ RENDER ============ */
 
