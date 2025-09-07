@@ -1,5 +1,5 @@
 'use client';
-
+import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
@@ -21,6 +21,13 @@ type WeekOption = { week_number: number };
 const YEAR = 2025;
 
 export default function AdminScoresPage() {
+  const router = useRouter();
+
+  // --- Admin guard state (must be before any returns) ---
+  const [checkingAdmin, setCheckingAdmin] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  // --- Page state (also before any early returns) ---
   const [week, setWeek] = useState<number>(1);
   const [weeks, setWeeks] = useState<number[]>([]);
   const [rows, setRows] = useState<GameForScore[]>([]);
@@ -28,27 +35,57 @@ export default function AdminScoresPage() {
   const [loading, setLoading] = useState<boolean>(true);
   const [onlyPicked, setOnlyPicked] = useState<boolean>(true);
 
+  // --- Admin guard effect ---
+  useEffect(() => {
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const email = session?.user.email?.toLowerCase() ?? null;
+      if (!email) { router.replace('/login'); return; }
+
+      // OPTION A: lock by email (change to your admin email)
+      const okByEmail = email === 'me@chrismcarthur.co.uk';
+
+      // OPTION B: lock by players.display_name === 'Kinish'
+      let okByDisplay = false;
+      if (!okByEmail) {
+        const { data: player } = await supabase
+          .from('players')
+          .select('display_name')
+          .eq('email', email)
+          .maybeSingle();
+        okByDisplay = player?.display_name === 'Kinish';
+      }
+
+      const ok = okByEmail || okByDisplay;
+      setIsAdmin(ok);
+      setCheckingAdmin(false);
+
+      if (!ok) router.replace('/');
+    })();
+  }, [router]);
+
+  // --- Data loaders ---
   async function loadWeeks() {
     const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
-    if (data) setWeeks((data as WeekOption[]).map((w) => w.week_number));
+    if (data) setWeeks((data as WeekOption[]).map(w => w.week_number));
     else setWeeks(Array.from({ length: 18 }, (_, i) => i + 1));
   }
 
   async function loadWeekGames(w: number) {
     setLoading(true);
     const fn = onlyPicked
-      ? 'get_week_picked_games_with_details' // ← NEW
+      ? 'get_week_picked_games_with_details'
       : 'get_week_games_for_scoring';
     const { data, error } = await supabase.rpc(fn, { p_year: YEAR, p_week: w });
     if (!error && data) setRows(data as GameForScore[]);
     setLoading(false);
   }
 
-  useEffect(() => { loadWeeks(); }, []);
-  useEffect(() => { loadWeekGames(week); }, [week, onlyPicked]);
+  useEffect(() => { if (isAdmin) loadWeeks(); }, [isAdmin]);
+  useEffect(() => { if (isAdmin) loadWeekGames(week); }, [week, onlyPicked, isAdmin]);
 
   function updateRow(id: number, field: 'home_score' | 'away_score', value: number | null) {
-    setRows((prev) => prev.map((r) => (r.game_id === id ? { ...r, [field]: value } : r)));
+    setRows(prev => prev.map(r => (r.game_id === id ? { ...r, [field]: value } : r)));
   }
 
   async function saveScore(r: GameForScore) {
@@ -56,20 +93,28 @@ export default function AdminScoresPage() {
     const as = r.away_score ?? 0;
     setSavingId(r.game_id);
     const { error } = await supabase.rpc('set_final_score', {
-      p_year: YEAR, p_week_number: week,
-      p_home_short: r.home, p_away_short: r.away,
-      p_home_score: hs, p_away_score: as
+      p_year: YEAR,
+      p_week_number: week,
+      p_home_short: r.home,
+      p_away_short: r.away,
+      p_home_score: hs,
+      p_away_score: as,
     });
     setSavingId(null);
     if (error) alert(error.message);
     else await loadWeekGames(week);
   }
 
+  // --- Early returns AFTER all hooks ---
+  if (checkingAdmin) return <div className="max-w-5xl mx-auto p-6">Checking access…</div>;
+  if (!isAdmin) return null;
+
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Admin · Final Scores</h1>
-        <Link className="underline" href="/">← Back to Draft</Link>
+        {/* If you want to go back to Draft explicitly, link to /draft */}
+        <Link className="underline" href="/draft">← Back to Draft</Link>
       </header>
 
       <div className="flex items-center gap-4">
@@ -85,7 +130,11 @@ export default function AdminScoresPage() {
         </div>
 
         <label className="text-sm flex items-center gap-2 select-none">
-          <input type="checkbox" checked={onlyPicked} onChange={(e) => setOnlyPicked(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={onlyPicked}
+            onChange={(e) => setOnlyPicked(e.target.checked)}
+          />
           Only games with Picks or O/U
         </label>
       </div>
@@ -96,7 +145,6 @@ export default function AdminScoresPage() {
         <div className="space-y-2">
           {rows.map((r) => (
             <div key={r.game_id} className="p-2 border rounded">
-              {/* row */}
               <div className="grid grid-cols-6 gap-2 items-center">
                 <div className="col-span-2 text-sm">{r.home} vs {r.away}</div>
                 <div className="flex items-center gap-2">
@@ -132,7 +180,6 @@ export default function AdminScoresPage() {
                 </div>
               </div>
 
-              {/* picked-by line */}
               {(r.home_spread_pickers?.length || r.away_spread_pickers?.length ||
                 r.ou_over_pickers?.length || r.ou_under_pickers?.length) ? (
                 <div className="mt-1 text-xs text-gray-400">
