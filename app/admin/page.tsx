@@ -22,6 +22,7 @@ export default function AdminScoresPage() {
   const [rows, setRows] = useState<GameForScore[]>([]);
   const [savingId, setSavingId] = useState<number | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [onlyPicked, setOnlyPicked] = useState<boolean>(true); // ← NEW
 
   async function loadWeeks() {
     const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
@@ -31,13 +32,14 @@ export default function AdminScoresPage() {
 
   async function loadWeekGames(w: number) {
     setLoading(true);
-    const { data, error } = await supabase.rpc('get_week_games_for_scoring', { p_year: YEAR, p_week: w });
+    const fn = onlyPicked ? 'get_week_picked_games_for_scoring' : 'get_week_games_for_scoring';
+    const { data, error } = await supabase.rpc(fn, { p_year: YEAR, p_week: w });
     if (!error && data) setRows(data as GameForScore[]);
     setLoading(false);
   }
 
   useEffect(() => { loadWeeks(); }, []);
-  useEffect(() => { loadWeekGames(week); }, [week]);
+  useEffect(() => { loadWeekGames(week); }, [week, onlyPicked]); // ← reload when toggled
 
   function updateRow(id: number, field: 'home_score' | 'away_score', value: number | null) {
     setRows((prev) => prev.map((r) => (r.game_id === id ? { ...r, [field]: value } : r)));
@@ -67,17 +69,28 @@ export default function AdminScoresPage() {
         <Link className="underline" href="/">← Back to Draft</Link>
       </header>
 
-      <div className="flex items-center gap-3">
-        <label className="text-sm">Week</label>
-        <select
-          className="border rounded p-1 bg-transparent"
-          value={week}
-          onChange={(e) => setWeek(parseInt(e.target.value, 10))}
-        >
-          {weeks.map((w) => (
-            <option key={w} value={w}>Week {w}</option>
-          ))}
-        </select>
+      <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2">
+          <label className="text-sm">Week</label>
+          <select
+            className="border rounded p-1 bg-transparent"
+            value={week}
+            onChange={(e) => setWeek(parseInt(e.target.value, 10))}
+          >
+            {weeks.map((w) => (
+              <option key={w} value={w}>Week {w}</option>
+            ))}
+          </select>
+        </div>
+
+        <label className="text-sm flex items-center gap-2 select-none">
+          <input
+            type="checkbox"
+            checked={onlyPicked}
+            onChange={(e) => setOnlyPicked(e.target.checked)}
+          />
+          Only games with Picks or O/U
+        </label>
       </div>
 
       {loading ? (
@@ -120,12 +133,17 @@ export default function AdminScoresPage() {
               </div>
             </div>
           ))}
-          {rows.length === 0 && <div className="text-sm text-gray-400">No games for this week.</div>}
+
+          {rows.length === 0 && (
+            <div className="text-sm text-gray-400">
+              {onlyPicked ? 'No picked games for this week yet.' : 'No games found for this week.'}
+            </div>
+          )}
         </div>
       )}
 
       <p className="text-xs text-gray-400">
-        After saving all scores for a week, refresh the main page to see colours and summary update.
+        Scores update spreads/OUs on the main page automatically.
       </p>
     </div>
   );
