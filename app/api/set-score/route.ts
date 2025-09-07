@@ -26,7 +26,6 @@ export async function POST(req: Request): Promise<Response> {
     if (authErr || !user?.email) return new Response('Unauthorized', { status: 401 });
     const email = user.email.toLowerCase();
 
-    // Admin check: your email OR players.display_name === 'Kinish'
     let ok = email === 'me@chrismcarthur.co.uk';
     if (!ok) {
       const { data: player } = await supabaseAdmin
