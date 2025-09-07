@@ -11,6 +11,10 @@ type GameForScore = {
   home_score: number | null;
   away_score: number | null;
   kickoff: string;
+  home_spread_pickers?: string[];
+  away_spread_pickers?: string[];
+  ou_over_pickers?: string[];
+  ou_under_pickers?: string[];
 };
 type WeekOption = { week_number: number };
 
@@ -22,7 +26,7 @@ export default function AdminScoresPage() {
   const [rows, setRows] = useState<GameForScore[]>([]);
   const [savingId, setSavingId] = useState<number | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-  const [onlyPicked, setOnlyPicked] = useState<boolean>(true); // ← NEW
+  const [onlyPicked, setOnlyPicked] = useState<boolean>(true);
 
   async function loadWeeks() {
     const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
@@ -32,14 +36,16 @@ export default function AdminScoresPage() {
 
   async function loadWeekGames(w: number) {
     setLoading(true);
-    const fn = onlyPicked ? 'get_week_picked_games_for_scoring' : 'get_week_games_for_scoring';
+    const fn = onlyPicked
+      ? 'get_week_picked_games_with_details' // ← NEW
+      : 'get_week_games_for_scoring';
     const { data, error } = await supabase.rpc(fn, { p_year: YEAR, p_week: w });
     if (!error && data) setRows(data as GameForScore[]);
     setLoading(false);
   }
 
   useEffect(() => { loadWeeks(); }, []);
-  useEffect(() => { loadWeekGames(week); }, [week, onlyPicked]); // ← reload when toggled
+  useEffect(() => { loadWeekGames(week); }, [week, onlyPicked]);
 
   function updateRow(id: number, field: 'home_score' | 'away_score', value: number | null) {
     setRows((prev) => prev.map((r) => (r.game_id === id ? { ...r, [field]: value } : r)));
@@ -50,12 +56,9 @@ export default function AdminScoresPage() {
     const as = r.away_score ?? 0;
     setSavingId(r.game_id);
     const { error } = await supabase.rpc('set_final_score', {
-      p_year: YEAR,
-      p_week_number: week,
-      p_home_short: r.home,
-      p_away_short: r.away,
-      p_home_score: hs,
-      p_away_score: as,
+      p_year: YEAR, p_week_number: week,
+      p_home_short: r.home, p_away_short: r.away,
+      p_home_score: hs, p_away_score: as
     });
     setSavingId(null);
     if (error) alert(error.message);
@@ -77,18 +80,12 @@ export default function AdminScoresPage() {
             value={week}
             onChange={(e) => setWeek(parseInt(e.target.value, 10))}
           >
-            {weeks.map((w) => (
-              <option key={w} value={w}>Week {w}</option>
-            ))}
+            {weeks.map((w) => <option key={w} value={w}>Week {w}</option>)}
           </select>
         </div>
 
         <label className="text-sm flex items-center gap-2 select-none">
-          <input
-            type="checkbox"
-            checked={onlyPicked}
-            onChange={(e) => setOnlyPicked(e.target.checked)}
-          />
+          <input type="checkbox" checked={onlyPicked} onChange={(e) => setOnlyPicked(e.target.checked)} />
           Only games with Picks or O/U
         </label>
       </div>
@@ -98,39 +95,53 @@ export default function AdminScoresPage() {
       ) : (
         <div className="space-y-2">
           {rows.map((r) => (
-            <div key={r.game_id} className="grid grid-cols-6 gap-2 items-center p-2 border rounded">
-              <div className="col-span-2 text-sm">{r.home} vs {r.away}</div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-400">Home</span>
-                <input
-                  type="number"
-                  className="w-16 border rounded p-1 bg-transparent"
-                  value={r.home_score ?? ''}
-                  onChange={(e) =>
-                    updateRow(r.game_id, 'home_score', e.target.value === '' ? null : parseInt(e.target.value, 10))
-                  }
-                />
+            <div key={r.game_id} className="p-2 border rounded">
+              {/* row */}
+              <div className="grid grid-cols-6 gap-2 items-center">
+                <div className="col-span-2 text-sm">{r.home} vs {r.away}</div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-400">Home</span>
+                  <input
+                    type="number"
+                    className="w-16 border rounded p-1 bg-transparent"
+                    value={r.home_score ?? ''}
+                    onChange={(e) =>
+                      updateRow(r.game_id, 'home_score', e.target.value === '' ? null : parseInt(e.target.value, 10))
+                    }
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-400">Away</span>
+                  <input
+                    type="number"
+                    className="w-16 border rounded p-1 bg-transparent"
+                    value={r.away_score ?? ''}
+                    onChange={(e) =>
+                      updateRow(r.game_id, 'away_score', e.target.value === '' ? null : parseInt(e.target.value, 10))
+                    }
+                  />
+                </div>
+                <div className="text-right">
+                  <button
+                    onClick={() => saveScore(r)}
+                    disabled={savingId === r.game_id}
+                    className="px-3 py-1 border rounded disabled:opacity-50"
+                  >
+                    {savingId === r.game_id ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-400">Away</span>
-                <input
-                  type="number"
-                  className="w-16 border rounded p-1 bg-transparent"
-                  value={r.away_score ?? ''}
-                  onChange={(e) =>
-                    updateRow(r.game_id, 'away_score', e.target.value === '' ? null : parseInt(e.target.value, 10))
-                  }
-                />
-              </div>
-              <div className="text-right">
-                <button
-                  onClick={() => saveScore(r)}
-                  disabled={savingId === r.game_id}
-                  className="px-3 py-1 border rounded disabled:opacity-50"
-                >
-                  {savingId === r.game_id ? 'Saving…' : 'Save'}
-                </button>
-              </div>
+
+              {/* picked-by line */}
+              {(r.home_spread_pickers?.length || r.away_spread_pickers?.length ||
+                r.ou_over_pickers?.length || r.ou_under_pickers?.length) ? (
+                <div className="mt-1 text-xs text-gray-400">
+                  {r.home_spread_pickers?.length ? <>ATS {r.home}: {r.home_spread_pickers.join(', ')}</> : null}
+                  {r.away_spread_pickers?.length ? <> {r.home_spread_pickers?.length ? ' • ' : ''}ATS {r.away}: {r.away_spread_pickers.join(', ')}</> : null}
+                  {r.ou_over_pickers?.length ? <> {(r.home_spread_pickers?.length || r.away_spread_pickers?.length) ? ' • ' : ''}O/U OVER: {r.ou_over_pickers.join(', ')}</> : null}
+                  {r.ou_under_pickers?.length ? <> { (r.ou_over_pickers?.length || r.home_spread_pickers?.length || r.away_spread_pickers?.length) ? ' • ' : ''}O/U UNDER: {r.ou_under_pickers.join(', ')}</> : null}
+                </div>
+              ) : null}
             </div>
           ))}
 
