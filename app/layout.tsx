@@ -2,6 +2,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import './globals.css';
+import NavLinks from '@/components/NavLinks'; // ← add this
 
 export const metadata: Metadata = {
   title: 'ATS Draft',
@@ -15,12 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <header className="border-b border-white/10">
           <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
             <Link href="/" className="font-semibold">ATS Draft</Link>
-            <nav className="flex gap-4 text-sm">
-              <Link href="/">Scoreboard</Link>
-              <Link href="/draft">Draft</Link>
-              <Link href="/admin">Admin</Link>
-              <Link href="/standings">Standings</Link>
-            </nav>
+            <NavLinks /> {/* ← replaces the hard-coded links */}
           </div>
         </header>
         <main className="pb-16">{children}</main>
