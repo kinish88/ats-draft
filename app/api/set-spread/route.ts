@@ -3,7 +3,7 @@ import { supabaseAdmin } from '@/lib/supabaseAdmin';
 export const runtime = 'nodejs';
 
 type SetSpreadBody = {
-  pick_id: number;   // BIGINT in DB → number here is fine
+  pick_id: number;
   home: string;
   away: string;
   team: string;
