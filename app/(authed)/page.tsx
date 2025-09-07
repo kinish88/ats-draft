@@ -1,241 +1,359 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
-import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
-/** ========== CONFIG ========= */
 const YEAR = 2025;
-// If your games RPC has a different name, change it here:
-const GAMES_FN = 'get_week_games_with_status' as const;
-/** =========================== */
 
-/* ---------- Types ---------- */
+/* ----------------------------- small utilities ----------------------------- */
 
-type SpreadPickRow = {
-  pick_id: number;
-  player_name: string;
-  pick_number: number;
-  game: string;        // "PHI v DAL"
-  team_short: string;  // "PHI"
-  spread: number;      // -8, +1.5, …
-  result?: 'win' | 'loss' | 'push' | 'pending';
-};
+type AnyRec = Record<string, unknown>;
 
-type OUPickRow = {
-  id: number;
-  player_name: string;
-  game: string;              // "PHI v DAL"
-  pick: 'OVER' | 'UNDER';
-  total: number;             // 47.5, …
-  result?: 'win' | 'loss' | 'push' | 'pending';
-};
+function getStr(r: AnyRec, ...keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = r[k];
+    if (typeof v === 'string' && v.trim()) return v;
+  }
+  return undefined;
+}
+
+function getBool(r: AnyRec, ...keys: string[]): boolean | undefined {
+  for (const k of keys) {
+    const v = r[k];
+    if (typeof v === 'boolean') return v;
+    if (typeof v === 'number') return v !== 0;
+    if (typeof v === 'string') {
+      const s = v.toLowerCase();
+      if (['true', 't', '1', 'yes', 'y'].includes(s)) return true;
+      if (['false', 'f', '0', 'no', 'n'].includes(s)) return false;
+    }
+  }
+  return undefined;
+}
+
+function getNum(r: AnyRec, ...keys: (keyof AnyRec)[]): number | null {
+  for (const k of keys) {
+    const v = r[k as string];
+    if (typeof v === 'number' && Number.isFinite(v)) return v;
+    if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) {
+      return Number(v);
+    }
+  }
+  return null;
+}
+
+function fmtSpread(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '';
+  if (n === 0) return 'PK';
+  return n > 0 ? `+${n}` : `${n}`;
+}
+
+/* ---------------------------------- types ---------------------------------- */
 
 type WeekOption = { week_number: number };
 
 type GameRow = {
-  game_id: number;
-  home_short: string;
-  away_short: string;
+  id: number;
+  home: string;
+  away: string;
   home_spread: number | null;
   away_spread: number | null;
-  home_logo_url?: string | null;
-  away_logo_url?: string | null;
-
-  // live fields (nullable if not started)
-  live_home_score?: number | null;
-  live_away_score?: number | null;
-  is_live?: boolean | null;
-  is_final?: boolean | null;
-  kickoff?: string | null;
+  live_home_score: number | null;
+  live_away_score: number | null;
+  is_live: boolean;
+  is_final: boolean;
 };
 
-/* ------- Small helpers ------- */
+type PlayerPick = {
+  team: string;
+  matchup: string;
+  spread: number | null;
+  result: 'win' | 'loss' | 'push' | 'pending' | null;
+};
 
-function fmtSpread(n: number | null | undefined): string {
-  if (n === null || n === undefined) return '—';
-  return n > 0 ? `+${n}` : `${n}`;
+type PlayerPicksBlock = { name: string; picks: PlayerPick[] };
+
+type OUPick = {
+  player: string;
+  matchup: string;
+  side: 'OVER' | 'UNDER' | '';
+  total: number | null;
+  result: 'win' | 'loss' | 'push' | 'pending';
+};
+
+/* ------------------------------ logo preload ------------------------------ */
+
+type LogoMap = Map<string, string>; // short_name -> logo_url
+
+async function loadLogos(): Promise<LogoMap> {
+  const { data, error } = await supabase
+    .from('teams')
+    .select('short_name, logo_url');
+
+  const map: LogoMap = new Map();
+  if (!error && data) {
+    for (const t of data) {
+      if (t.short_name && t.logo_url) map.set(t.short_name, t.logo_url);
+    }
+  }
+  return map;
 }
 
-function Badge({ result }: { result?: string }) {
-  if (!result) return null;
-  const cls =
-    result === 'win'
-      ? 'text-green-400'
-      : result === 'loss'
-      ? 'text-red-400'
-      : result === 'push'
-      ? 'text-orange-400'
-      : 'text-gray-400';
-  return <span className={`ml-2 ${cls}`}>{result}</span>;
+/* --------------------------------- cells ---------------------------------- */
+
+function TinyLogo({ url, alt }: { url | null | undefined: string; alt: string }) {
+  if (!url) return <span className="inline-block w-4 h-4 mr-2 align-middle" />;
+  // We stick with <img> to keep lint quiet in prod builds without touching next.config
+  return (
+    <img
+      src={url}
+      alt={alt}
+      className="w-4 h-4 mr-2 inline-block align-middle rounded-sm"
+      loading="lazy"
+      decoding="async"
+    />
+  );
 }
 
 function ScoreCell({
   home,
   away,
   isLive,
-  isFinal,
 }: {
   home: number | null;
   away: number | null;
-  isLive?: boolean | null;
-  isFinal?: boolean | null;
+  isLive: boolean;
 }) {
-  const label =
-    isFinal ? 'FT' : isLive ? 'LIVE' : home === null && away === null ? '—' : '';
-
+  const text =
+    home === null && away === null
+      ? '—'
+      : `${home ?? '—'} — ${away ?? '—'}`;
   return (
-    <span className="tabular-nums">
-      {home ?? '—'} <span className="opacity-60">–</span> {away ?? '—'}
-      {label ? <span className="ml-2 text-xs opacity-70">{label}</span> : null}
+    <span className={`text-sm tabular-nums ${isLive ? 'animate-pulse' : ''}`}>
+      {text}
     </span>
   );
 }
 
-/* =================== PAGE =================== */
+/* ---------------------------------- page ---------------------------------- */
 
-export default function ScoreboardPage() {
-  const [week, setWeek] = useState<number>(1);
+export default function Page() {
   const [weeks, setWeeks] = useState<number[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
-
-  // picks
-  const [spreadByPlayer, setSpreadByPlayer] = useState<
-    Record<string, SpreadPickRow[]>
-  >({});
-  const [ouRows, setOuRows] = useState<OUPickRow[]>([]);
-
-  // scoreboard
+  const [week, setWeek] = useState<number>(1);
   const [showFull, setShowFull] = useState<boolean>(false);
+
+  const [logos, setLogos] = useState<LogoMap>(new Map());
+
+  // Full scoreboard rows
   const [games, setGames] = useState<GameRow[]>([]);
+  const gameIdSet = useMemo(() => new Set(games.map((g) => g.id)), [games]);
 
-  // handy set of loaded game ids (for realtime filtering)
-  const gameIdSet = useMemo(() => new Set(games.map((g) => g.game_id)), [games]);
+  // Picks view
+  const [players, setPlayers] = useState<PlayerPicksBlock[]>([]);
+  const [ouPicks, setOuPicks] = useState<OUPick[]>([]);
 
-  /* -------- Load weeks once -------- */
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
-      if (data && Array.isArray(data)) {
-        setWeeks((data as WeekOption[]).map((w) => w.week_number));
-      } else {
-        setWeeks(Array.from({ length: 18 }, (_, i) => i + 1));
-      }
-    })();
-  }, []);
+  /* ------------------------------ data loaders ------------------------------ */
 
-  /* -------- Load picks + (optional) games -------- */
-  async function loadData(w: number, includeGames: boolean) {
-    setLoading(true);
-
-    const spreadPromise = supabase.rpc('get_week_spread_picks_admin', {
-      p_year: YEAR,
-      p_week: w,
-    });
-
-    const ouPromise = supabase.rpc('get_week_ou_picks_admin', {
-      p_year: YEAR,
-      p_week: w,
-    });
-
-    const [spRes, ouRes] = await Promise.all([spreadPromise, ouPromise]);
-
-    // group spread picks by player
-    const grouped: Record<string, SpreadPickRow[]> = {};
-    const spreadRows = (spRes.data as SpreadPickRow[] | null) ?? [];
-    spreadRows.forEach((r) => {
-      (grouped[r.player_name] ??= []).push(r);
-    });
-    // keep each player’s picks in draft order
-    Object.values(grouped).forEach((arr) =>
-      arr.sort((a, b) => a.pick_number - b.pick_number),
-    );
-
-    setSpreadByPlayer(grouped);
-    setOuRows(((ouRes.data as OUPickRow[] | null) ?? []).slice());
-
-    if (includeGames) {
-      const { data: gameData } = await supabase.rpc(GAMES_FN, {
-        p_year: YEAR,
-        p_week: w,
-      });
-      setGames(((gameData as GameRow[] | null) ?? []).slice());
-    } else {
-      setGames([]);
-    }
-
-    setLoading(false);
+  async function loadWeeks() {
+    const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
+    if (data) setWeeks((data as WeekOption[]).map((w) => w.week_number));
+    else setWeeks(Array.from({ length: 18 }, (_, i) => i + 1));
   }
+
+  async function loadFullScoreboard(w: number) {
+    // Prefer the richer function if you have it
+    const candidateFns = ['get_week_games_with_status', 'get_week_games_for_scoring'];
+    let rows: AnyRec[] = [];
+    let firstErr: string | null = null;
+
+    for (const fn of candidateFns) {
+      const { data, error } = await supabase.rpc(fn, { p_year: YEAR, p_week: w });
+      if (!error && data) {
+        rows = data as AnyRec[];
+        firstErr = null;
+        break;
+      }
+      firstErr = error?.message ?? `rpc ${fn} failed`;
+    }
+    if (firstErr) console.warn(firstErr);
+
+    const mapped: GameRow[] = rows.map((r) => {
+      const id = getNum(r, 'game_id', 'id') ?? Math.floor(Math.random() * 1e9);
+      const home = getStr(r, 'home', 'home_team', 'home_short', 'home_code') ?? '';
+      const away = getStr(r, 'away', 'away_team', 'away_short', 'away_code') ?? '';
+
+      // Try to pick up spreads if present
+      const home_spread =
+        getNum(r, 'home_spread', 'home_line', 'home_handicap', 'spread_home', 'h_spread');
+      const away_spread =
+        getNum(r, 'away_spread', 'away_line', 'away_handicap', 'spread_away', 'a_spread');
+
+      const live_home_score = getNum(r, 'live_home_score', 'home_live', 'home_score');
+      const live_away_score = getNum(r, 'live_away_score', 'away_live', 'away_score');
+
+      const is_live = getBool(r, 'is_live', 'live') ?? false;
+      const is_final = getBool(r, 'is_final', 'final') ?? false;
+
+      return {
+        id,
+        home,
+        away,
+        home_spread,
+        away_spread,
+        live_home_score,
+        live_away_score,
+        is_live,
+        is_final,
+      };
+    });
+
+    setGames(mapped);
+  }
+
+  async function loadPicksView(w: number) {
+    // Spread picks
+    const { data: spreadData } = await supabase.rpc('get_week_spread_picks_admin', {
+      p_year: YEAR,
+      p_week: w,
+    });
+    const rows = (spreadData ?? []) as AnyRec[];
+
+    const grouped = new Map<string, PlayerPick[]>();
+
+    rows
+      .sort(
+        (a, b) =>
+          (getNum(a, 'pick_number', 'pick') ?? 0) -
+          (getNum(b, 'pick_number', 'pick') ?? 0),
+      )
+      .forEach((r) => {
+        const player =
+          getStr(r, 'player', 'display_name', 'player_name', 'drafter') ?? 'Unknown';
+
+        const team = getStr(r, 'team', 'team_short', 'pick_team') ?? '';
+        const matchup = getStr(r, 'matchup', 'game', 'game_label') ?? '';
+        const spread = getNum(r, 'spread', 'line');
+        const result = (getStr(r, 'result', 'status') ?? 'pending') as
+          | 'win'
+          | 'loss'
+          | 'push'
+          | 'pending';
+
+        const arr = grouped.get(player) ?? [];
+        arr.push({ team, matchup, spread, result });
+        grouped.set(player, arr);
+      });
+
+    const playersOut: PlayerPicksBlock[] = [];
+    for (const [name, picks] of grouped) playersOut.push({ name, picks });
+    setPlayers(playersOut);
+
+    // O/U picks
+    const { data: ouData } = await supabase.rpc('get_week_ou_picks_admin', {
+      p_year: YEAR,
+      p_week: w,
+    });
+    const ouRows = (ouData ?? []) as AnyRec[];
+
+    setOuPicks(
+      ouRows.map((r) => ({
+        player:
+          getStr(r, 'player', 'display_name', 'player_name', 'drafter') ?? 'Unknown',
+        matchup: getStr(r, 'matchup', 'game', 'game_label') ?? '',
+        side: (getStr(r, 'choice', 'ou_choice', 'side', 'direction') ?? '').toUpperCase() as
+          | 'OVER'
+          | 'UNDER'
+          | '',
+        total: getNum(r, 'total', 'ou_total', 'line'),
+        result: (getStr(r, 'result', 'status') ?? 'pending') as
+          | 'win'
+          | 'loss'
+          | 'push'
+          | 'pending',
+      })),
+    );
+  }
+
+  async function loadData(w: number, showAll: boolean) {
+    if (showAll) {
+      await loadFullScoreboard(w);
+    } else {
+      await loadPicksView(w);
+    }
+  }
+
+  /* ------------------------------- live stream ------------------------------ */
+
+  useEffect(() => {
+    // preload logos once
+    (async () => setLogos(await loadLogos()))();
+    loadWeeks();
+  }, []);
 
   useEffect(() => {
     loadData(week, showFull);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [week, showFull]);
 
-// -------- Realtime live-score updates --------
-useEffect(() => {
-  if (!showFull || games.length === 0) return;
+  useEffect(() => {
+    // Subscribe to games changes to reflect live scores in full scoreboard mode
+    const channel = supabase
+      .channel('games-live')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'games' },
+        (payload: unknown) => {
+          if (!showFull) return;
 
-  type GameUpdateRow = Partial<{
-    id: number;
-    live_home_score: number | null;
-    live_away_score: number | null;
-    is_live: boolean | null;
-    is_final: boolean | null;
-  }>;
+          // Very light type guard
+          const p = payload as { new?: AnyRec } | null;
+          const row = p?.new ?? null;
+          const id = row ? getNum(row, 'id') : null;
+          if (id === null || !gameIdSet.has(id)) return;
 
-  const channel = supabase
-    .channel('live-scores')
-    .on(
-      'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'games' },
-      (payload) => {
-        // payload.new can be {} | Row — so narrow it
-        const row = payload.new as GameUpdateRow;
-        const id = row?.id;
+          const live_home_score = row ? getNum(row, 'live_home_score') : null;
+          const live_away_score = row ? getNum(row, 'live_away_score') : null;
+          const is_live = row ? getBool(row, 'is_live') ?? undefined : undefined;
+          const is_final = row ? getBool(row, 'is_final') ?? undefined : undefined;
 
-        if (typeof id !== 'number' || !gameIdSet.has(id)) return;
+          setGames((prev) =>
+            prev.map((g) =>
+              g.id !== id
+                ? g
+                : {
+                    ...g,
+                    live_home_score:
+                      live_home_score !== null ? live_home_score : g.live_home_score,
+                    live_away_score:
+                      live_away_score !== null ? live_away_score : g.live_away_score,
+                    is_live: is_live ?? g.is_live,
+                    is_final: is_final ?? g.is_final,
+                  },
+            ),
+          );
+        },
+      )
+      .subscribe();
 
-        setGames((prev) =>
-          prev.map((g) =>
-            g.game_id === id
-              ? {
-                  ...g,
-                  live_home_score:
-                    row.live_home_score ?? g.live_home_score ?? null,
-                  live_away_score:
-                    row.live_away_score ?? g.live_away_score ?? null,
-                  is_live:
-                    row.is_live ?? (g.is_live ?? null),
-                  is_final:
-                    row.is_final ?? (g.is_final ?? null),
-                }
-              : g,
-          ),
-        );
-      },
-    );
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [gameIdSet, showFull]);
 
-  channel.subscribe();
-  return () => {
-    channel.unsubscribe();
-  };
-}, [showFull, gameIdSet, games.length]);
-
-
-  /* ============ RENDER ============ */
+  /* ---------------------------------- UI ----------------------------------- */
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Week {week} Scoreboard</h1>
+    <div className="max-w-5xl mx-auto px-4 py-6 space-y-6">
+      <header className="flex items-center gap-4 justify-between">
+        <h1 className="text-2xl font-semibold">
+          Week {week} Scoreboard
+        </h1>
+
         <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <label className="text-sm">Week</label>
+          <label className="text-sm flex items-center gap-2">
+            <span>Week</span>
             <select
-              className="border rounded p-1 bg-transparent"
+              className="border rounded px-2 py-1 bg-transparent"
               value={week}
               onChange={(e) => setWeek(parseInt(e.target.value, 10))}
             >
@@ -245,7 +363,7 @@ useEffect(() => {
                 </option>
               ))}
             </select>
-          </div>
+          </label>
 
           <label className="text-sm flex items-center gap-2 select-none">
             <input
@@ -256,165 +374,137 @@ useEffect(() => {
             Show full scoreboard
           </label>
         </div>
-      </div>
+      </header>
 
-      {/* Picks */}
-      <section className="space-y-4">
-        <h2 className="text-xl font-semibold">Picks</h2>
+      {!showFull ? (
+        <>
+          <section className="space-y-4">
+            <h2 className="text-lg font-semibold">Picks</h2>
 
-        {loading && Object.keys(spreadByPlayer).length === 0 ? (
-          <div className="text-sm opacity-70">Loading…</div>
-        ) : null}
-
-        {Object.entries(spreadByPlayer).map(([player, rows]) => (
-          <div key={player} className="border rounded p-4">
-            <div className="font-semibold mb-2">{player}</div>
-
-            {rows.length === 0 ? (
+            {players.length === 0 && (
               <div className="text-sm opacity-70">No picks</div>
-            ) : (
-              <ul className="space-y-1">
-                {rows.map((r) => (
-                  <li
-                    key={r.pick_id}
-                    className="flex items-center justify-between"
-                  >
-                    <span>
-                      {r.team_short}{' '}
-                      <span className="opacity-70">({r.game})</span>
-                    </span>
-                    <span className="tabular-nums">
-                      {fmtSpread(r.spread)}
-                      <Badge result={r.result} />
-                    </span>
-                  </li>
-                ))}
-              </ul>
             )}
-          </div>
-        ))}
 
-        {Object.keys(spreadByPlayer).length === 0 && !loading && (
-          <div className="text-sm opacity-70">No picks found for this week.</div>
-        )}
-      </section>
-
-      {/* O/U */}
-      <section className="space-y-3 mt-6">
-        <h2 className="text-xl font-semibold">O/U Tie-breakers</h2>
-
-        {ouRows.length === 0 ? (
-          <>
-            <div className="border rounded p-3 text-right text-sm opacity-70">
-              pending
-            </div>
-            <div className="border rounded p-3 text-right text-sm opacity-70">
-              pending
-            </div>
-            <div className="border rounded p-3 text-right text-sm opacity-70">
-              pending
-            </div>
-          </>
-        ) : (
-          ouRows.map((r) => (
-            <div
-              key={r.id}
-              className="border rounded p-3 flex items-center justify-between"
-            >
-              <div>
-                <div className="font-medium">{r.player_name}</div>
-                <div className="opacity-70 text-sm">{r.game}</div>
+            {players.map((pl) => (
+              <div key={pl.name} className="border rounded p-4">
+                <div className="font-semibold mb-2">{pl.name}</div>
+                {pl.picks.length === 0 ? (
+                  <div className="text-sm opacity-70">No picks</div>
+                ) : (
+                  <div className="space-y-1">
+                    {pl.picks.map((pk, idx) => (
+                      <div
+                        key={`${pl.name}-${idx}-${pk.team}`}
+                        className="flex items-center justify-between"
+                      >
+                        <div className="flex items-center gap-2">
+                          <TinyLogo url={logos.get(pk.team)} alt={pk.team} />
+                          <span className="font-medium">{pk.team}</span>
+                          <span className="opacity-70 text-sm">({pk.matchup})</span>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <span className="tabular-nums opacity-80 text-sm">
+                            {fmtSpread(pk.spread)}
+                          </span>
+                          {pk.result && (
+                            <span
+                              className={
+                                pk.result === 'win'
+                                  ? 'text-green-500'
+                                  : pk.result === 'loss'
+                                  ? 'text-red-500'
+                                  : 'opacity-70'
+                              }
+                            >
+                              {pk.result}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
-              <div className="tabular-nums">
-                {r.pick} {r.total}
-                <Badge result={r.result} />
-              </div>
-            </div>
-          ))
-        )}
-      </section>
+            ))}
+          </section>
 
-      {/* Full scoreboard (optional) */}
-      {showFull && (
-        <section className="space-y-2 mt-8">
-          <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold">All Games</h2>
-            <div className="text-sm opacity-70">
-              Live scores update automatically.
-            </div>
-          </div>
-
-          {games.map((g) => {
-            const homeDisplay = g.live_home_score ?? null;
-            const awayDisplay = g.live_away_score ?? null;
-            const isLive = g.is_live ?? false;
-            const isFinal = g.is_final ?? false;
-
-            return (
-              <div
-                key={g.game_id}
-                className="border rounded px-3 py-2 grid grid-cols-7 gap-2 items-center"
-              >
-                {/* left: home */}
-                <div className="col-span-3 flex items-center gap-2">
-                  {/* Using <img> keeps us from configuring next/image remote domains */}
-                  <img
-                    src={g.home_logo_url ?? ''}
-                    alt={g.home_short}
-                    className="h-5 w-5 object-contain"
-                  />
-                  <span className="font-medium">{g.home_short}</span>
-                  <span className="text-xs opacity-70">
-                    {fmtSpread(g.home_spread)}
-                  </span>
+          <section className="space-y-3">
+            <h2 className="text-lg font-semibold">O/U Tie-breakers</h2>
+            {ouPicks.length === 0 ? (
+              <div className="border rounded p-3 opacity-70 text-sm">pending</div>
+            ) : (
+              ouPicks.map((o, i) => (
+                <div className="border rounded p-3" key={`${o.player}-${i}`}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{o.player}</span>
+                      <span className="opacity-70 text-sm">{o.matchup}</span>
+                    </div>
+                    <div className="flex items-center gap-4">
+                      <span className="text-sm">{o.side}</span>
+                      <span className="tabular-nums text-sm">{o.total ?? ''}</span>
+                      <span
+                        className={
+                          o.result === 'win'
+                            ? 'text-green-500'
+                            : o.result === 'loss'
+                            ? 'text-red-500'
+                            : 'opacity-70'
+                        }
+                      >
+                        {o.result}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-
-                {/* center: score */}
-                <div className="col-span-1 text-center">
-                  <ScoreCell
-                    home={homeDisplay}
-                    away={awayDisplay}
-                    isLive={isLive}
-                    isFinal={isFinal}
-                  />
-                </div>
-
-                {/* right: away */}
-                <div className="col-span-3 flex items-center justify-end gap-2">
-                  <span className="text-xs opacity-70">
-                    {fmtSpread(g.away_spread)}
-                  </span>
-                  <span className="font-medium">{g.away_short}</span>
-                  <img
-                    src={g.away_logo_url ?? ''}
-                    alt={g.away_short}
-                    className="h-5 w-5 object-contain"
-                  />
-                </div>
-              </div>
-            );
-          })}
-
-          {games.length === 0 && !loading && (
+              ))
+            )}
+          </section>
+        </>
+      ) : (
+        <section className="space-y-2">
+          {games.length === 0 ? (
             <div className="text-sm opacity-70">No games found.</div>
+          ) : (
+            games.map((g) => {
+              const homeLogo = logos.get(g.home);
+              const awayLogo = logos.get(g.away);
+              return (
+                <div key={g.id} className="border rounded p-3">
+                  <div className="grid grid-cols-3 items-center">
+                    {/* left: home */}
+                    <div className="flex items-center gap-2">
+                      <TinyLogo url={homeLogo} alt={g.home} />
+                      <span className="font-medium">{g.home}</span>
+                      <span className="ml-2 opacity-70 text-sm">
+                        {fmtSpread(g.home_spread)}
+                      </span>
+                    </div>
+
+                    {/* center: score */}
+                    <div className="text-center">
+                      <ScoreCell
+                        home={g.live_home_score}
+                        away={g.live_away_score}
+                        isLive={g.is_live && !g.is_final}
+                      />
+                    </div>
+
+                    {/* right: away */}
+                    <div className="flex items-center justify-end gap-2">
+                      <span className="mr-2 opacity-70 text-sm">
+                        {fmtSpread(g.away_spread)}
+                      </span>
+                      <span className="font-medium">{g.away}</span>
+                      <TinyLogo url={awayLogo} alt={g.away} />
+                    </div>
+                  </div>
+                </div>
+              );
+            })
           )}
         </section>
       )}
-
-      {/* Footer links */}
-      <div className="pt-4 text-sm opacity-70 space-x-4">
-        <Link href="/draft" className="underline">
-          Draft
-        </Link>
-        <span>•</span>
-        <Link href="/standings" className="underline">
-          Standings
-        </Link>
-        <span>•</span>
-        <Link href="/admin" className="underline">
-          Admin
-        </Link>
-      </div>
     </div>
   );
 }
