@@ -228,59 +228,66 @@ export default function HomePage() {
       ) : (
         <div className="space-y-3">
           {rows.map((r) => {
-            const isLive =
-              r.live_home_score !== null &&
-              r.live_home_score !== undefined &&
-              r.live_away_score !== null &&
-              r.live_away_score !== undefined &&
-              !r.live_completed;
+  const isLive =
+    r.live_home_score !== null &&
+    r.live_home_score !== undefined &&
+    r.live_away_score !== null &&
+    r.live_away_score !== undefined &&
+    !r.live_completed;
 
-            const homeDisplay = isLive ? r.live_home_score : r.home_score;
-            const awayDisplay = isLive ? r.live_away_score : r.away_score;
+  // Ensure type: number | null (no undefined)
+  const homeDisplay: number | null = isLive
+    ? (r.live_home_score ?? null)
+    : (r.home_score ?? null);
 
-            return (
-              <div
-                key={r.game_id}
-                className="rounded border p-3 flex items-center justify-between gap-3"
-              >
-                {/* left: home */}
-                <div className="flex items-center gap-2 w-32">
-                  {r.home_logo_url ? (
-                    <Image
-                      src={r.home_logo_url}
-                      alt={r.home}
-                      width={20}
-                      height={20}
-                      className="rounded-sm"
-                    />
-                  ) : null}
-                  <div className="font-medium">{r.home}</div>
-                  <div className="text-xs ml-1 text-green-500">{fmtSpread(r.home_spread)}</div>
-                </div>
+  const awayDisplay: number | null = isLive
+    ? (r.live_away_score ?? null)
+    : (r.away_score ?? null);
 
-                {/* middle: vs + score */}
-                <div className="flex items-center gap-4">
-                  <span className="text-sm opacity-70">v</span>
-                  <ScoreCell home={homeDisplay} away={awayDisplay} isLive={Boolean(isLive)} />
-                </div>
+  return (
+    <div
+      key={r.game_id}
+      className="rounded border p-3 flex items-center justify-between gap-3"
+    >
+      {/* left: home */}
+      <div className="flex items-center gap-2 w-32">
+        {r.home_logo_url ? (
+          <Image
+            src={r.home_logo_url}
+            alt={r.home}
+            width={20}
+            height={20}
+            className="rounded-sm"
+          />
+        ) : null}
+        <div className="font-medium">{r.home}</div>
+        <div className="text-xs ml-1 text-green-500">{fmtSpread(r.home_spread)}</div>
+      </div>
 
-                {/* right: away */}
-                <div className="flex items-center gap-2 w-32 justify-end">
-                  <div className="text-xs mr-1 text-red-400">{fmtSpread(r.away_spread)}</div>
-                  <div className="font-medium">{r.away}</div>
-                  {r.away_logo_url ? (
-                    <Image
-                      src={r.away_logo_url}
-                      alt={r.away}
-                      width={20}
-                      height={20}
-                      className="rounded-sm"
-                    />
-                  ) : null}
-                </div>
-              </div>
-            );
-          })}
+      {/* middle: vs + score */}
+      <div className="flex items-center gap-4">
+        <span className="text-sm opacity-70">v</span>
+        <ScoreCell home={homeDisplay} away={awayDisplay} isLive={Boolean(isLive)} />
+      </div>
+
+      {/* right: away */}
+      <div className="flex items-center gap-2 w-32 justify-end">
+        <div className="text-xs mr-1 text-red-400">{fmtSpread(r.away_spread)}</div>
+        <div className="font-medium">{r.away}</div>
+        {r.away_logo_url ? (
+          <Image
+            src={r.away_logo_url}
+            alt={r.away}
+            width={20}
+            height={20}
+            className="rounded-sm"
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+})}
+
         </div>
       )}
     </div>
