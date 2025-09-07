@@ -40,6 +40,16 @@ type SeasonRow = {
   ou_pushes: number;
 };
 
+type WeekSummaryRow = {
+  display_name: string;
+  spread_wins: number;
+  spread_losses: number;
+  spread_pushes: number;
+  ou_result: string;
+  is_gold_winner: boolean;
+  is_ou_winner: boolean;
+};
+
 const YEAR = 2025;
 
 /** ---------- Small UI helpers ---------- */
@@ -63,20 +73,39 @@ export default function ScoreboardPage() {
   const [picks, setPicks] = useState<PickRow[]>([]);
   const [ouPicks, setOUPicks] = useState<OUPick[]>([]);
   const [season, setSeason] = useState<SeasonRow[]>([]);
+  const [weekSummary, setWeekSummary] = useState<WeekSummaryRow[]>([]);
 
-  // Group spread picks by player name
+  // Group spread picks by player, in your preferred order
   const grouped = useMemo(() => {
     const by: Record<string, PickRow[]> = {};
     for (const p of picks) {
       if (!by[p.picker]) by[p.picker] = [];
       by[p.picker].push(p);
     }
-    // Keep each player's picks in their original pick order
-    Object.values(by).forEach(arr => arr.sort((a,b) => a.pick_number - b.pick_number));
-    // Sort players alphabetically (or customize order here)
-    const order = Object.keys(by).sort((a,b) => a.localeCompare(b));
-    return order.map(name => ({ name, picks: by[name] }));
+    Object.values(by).forEach(arr => arr.sort((a, b) => a.pick_number - b.pick_number));
+
+    const preferred = ['Big Dawg', 'Pud', 'Kinish'];
+    const names = Object.keys(by);
+    const sortedNames = names.sort((a, b) => {
+      const ia = preferred.indexOf(a);
+      const ib = preferred.indexOf(b);
+      const va = ia === -1 ? 99 + a.localeCompare(b) : ia; // unknowns go after, alphabetically
+      const vb = ib === -1 ? 99 + b.localeCompare(a) : ib;
+      return va - vb;
+    });
+
+    return sortedNames.map(name => ({ name, picks: by[name] }));
   }, [picks]);
+
+  // Winner banner text (gold or O/U)
+  const winnerText = useMemo(() => {
+    if (!weekSummary.length) return 'No winner yet — scores pending or tie/push.';
+    const gold = weekSummary.find(r => r.is_gold_winner);
+    if (gold) return `🏅 ${gold.display_name} wins Week ${week} (3–0 gold)!`;
+    const ou = weekSummary.find(r => r.is_ou_winner);
+    if (ou) return `✅ ${ou.display_name} wins Week ${week} via O/U tiebreaker.`;
+    return 'No winner yet — scores pending or tie/push.';
+  }, [weekSummary, week]);
 
   async function loadWeeks() {
     const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
@@ -88,25 +117,42 @@ export default function ScoreboardPage() {
     const sess = await supabase.auth.getSession();
     setUserEmail(sess.data.session?.user.email ?? null);
 
-    const [spreads, ous, seasonRes] = await Promise.all([
+    const [spreads, ous, seasonRes, wsRes] = await Promise.all([
       supabase.rpc('get_week_spread_picks_v2', { p_year: YEAR, p_week: week }),
       supabase.rpc('get_week_ou_picks_v2', { p_year: YEAR, p_week: week }),
       supabase.rpc('get_season_standings', { p_year: YEAR }),
+      supabase.rpc('get_week_summary', { p_year: YEAR, p_week: week }),
     ]);
 
     setPicks((spreads.data as PickRow[]) ?? []);
     setOUPicks((ous.data as OUPick[]) ?? []);
     setSeason((seasonRes.data as SeasonRow[]) ?? []);
+    setWeekSummary((wsRes.data as WeekSummaryRow[]) ?? []);
   }
 
   useEffect(() => { loadWeeks(); }, []);
   useEffect(() => { loadData(); }, [week]);
 
   useEffect(() => {
-    // live update if anything changes server-side
-    const ch1 = supabase.channel('picks').on('postgres_changes', { event: '*', schema: 'public', table: 'picks' }, loadData).subscribe();
-    const ch2 = supabase.channel('ou_picks').on('postgres_changes', { event: '*', schema: 'public', table: 'ou_picks' }, loadData).subscribe();
-    return () => { supabase.removeChannel(ch1); supabase.removeChannel(ch2); };
+    const ch1 = supabase
+      .channel('picks')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'picks' }, loadData)
+      .subscribe();
+    const ch2 = supabase
+      .channel('ou_picks')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ou_picks' }, loadData)
+      .subscribe();
+    // If you enable realtime on `games`, uncomment below to refresh on score changes too.
+    // const ch3 = supabase
+    //   .channel('games')
+    //   .on('postgres_changes', { event: '*', schema: 'public', table: 'games' }, loadData)
+    //   .subscribe();
+
+    return () => {
+      supabase.removeChannel(ch1);
+      supabase.removeChannel(ch2);
+      // supabase.removeChannel(ch3);
+    };
   }, [week]);
 
   return (
@@ -129,6 +175,9 @@ export default function ScoreboardPage() {
           {' '}• <Link className="underline" href="/standings">Standings</Link>
         </div>
       </header>
+
+      {/* Week Winner banner */}
+      <div className="p-3 rounded border">{winnerText}</div>
 
       {/* PICKS grouped by player */}
       <section>
