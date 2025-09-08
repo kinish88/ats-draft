@@ -2,12 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
 const YEAR = 2025;
 const PLAYERS = ['Big Dawg', 'Pud', 'Kinish'] as const;
 const LOGO_BASE = (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/, '') || null;
 
+/* ----------------------------- types ----------------------------- */
+
 type BoardRow = { home: string; away: string; spread: number | null; total: number | null };
+type DraftBoardRpcRow = { home: unknown; away: unknown; spread: unknown; total: unknown };
+
 type PickRow = {
   id: number;
   season_year: number;
@@ -19,6 +24,20 @@ type PickRow = {
   away_short: string;
   spread_at_pick: number | null;
 };
+
+type PickTableRow = {
+  id: number;
+  season_year: number;
+  week_number: number;
+  pick_number: number;
+  player_display_name?: string | null;
+  player_name?: string | null;
+  team_short: string;
+  home_short: string;
+  away_short: string;
+  spread_at_pick: number | null;
+};
+
 type OuPickRow = {
   id: number;
   season_year: number;
@@ -29,6 +48,20 @@ type OuPickRow = {
   pick_side: 'OVER' | 'UNDER';
   total_at_pick: number | null;
 };
+
+type OuTableRow = {
+  id: number;
+  season_year: number;
+  week_number: number;
+  player_display_name?: string | null;
+  player_name?: string | null;
+  home_short: string;
+  away_short: string;
+  pick_side: 'OVER' | 'UNDER';
+  total_at_pick: number | null;
+};
+
+/* ----------------------------- utils ----------------------------- */
 
 function teamLogo(short?: string | null) {
   if (!short) return null;
@@ -46,18 +79,20 @@ function signed(n: number | null | undefined) {
   return n > 0 ? `+${n}` : `${n}`;
 }
 
+/* snake order for 3 players, 9 picks total */
 const snakeOrder: string[] = [
   PLAYERS[0], PLAYERS[1], PLAYERS[2],
   PLAYERS[2], PLAYERS[1], PLAYERS[0],
   PLAYERS[0], PLAYERS[1], PLAYERS[2],
 ];
 
+/* ------------------------------ page ----------------------------- */
+
 export default function DraftPage() {
   const [week, setWeek] = useState<number>(2);
   const [board, setBoard] = useState<BoardRow[]>([]);
   const [picks, setPicks] = useState<PickRow[]>([]);
   const [ouPicks, setOuPicks] = useState<OuPickRow[]>([]);
-  const [loading, setLoading] = useState(true);
   const [making, setMaking] = useState(false);
 
   const onScreenPairsRef = useRef<Set<string>>(new Set());
@@ -79,39 +114,57 @@ export default function DraftPage() {
   }, [board, picks]);
 
   async function loadAll(w: number) {
-    setLoading(true);
-
     // 1) Board (lines)
     const { data: b } = await supabase.rpc('get_week_draft_board', { p_year: YEAR, p_week: w });
-    const boardRows: BoardRow[] = (Array.isArray(b) ? b : []).map((r: any) => ({
-      home: String(r.home),
-      away: String(r.away),
+    const rows = (Array.isArray(b) ? (b as DraftBoardRpcRow[]) : []);
+    const boardRows: BoardRow[] = rows.map((r) => ({
+      home: String(r.home ?? ''),
+      away: String(r.away ?? ''),
       spread: r.spread == null ? null : Number(r.spread),
       total: r.total == null ? null : Number(r.total),
     }));
     setBoard(boardRows);
     onScreenPairsRef.current = new Set(boardRows.map(r => `${r.home}-${r.away}`));
 
-    // 2) Picks done so far
+    // 2) Picks so far
     const { data: sp } = await supabase
-      .from('v_pick_results') // view that includes player_display_name; falls back to 'picks' if needed
+      .from('v_pick_results')
       .select('id,season_year,week_number,pick_number,player_display_name,team_short,home_short,away_short,spread_at_pick')
       .eq('season_year', YEAR)
       .eq('week_number', w)
       .order('pick_number', { ascending: true });
 
-    setPicks((Array.isArray(sp) ? sp : []) as PickRow[]);
+    const spRows = Array.isArray(sp) ? sp : [];
+    setPicks(spRows.map((r) => ({
+      id: r.id as number,
+      season_year: r.season_year as number,
+      week_number: r.week_number as number,
+      pick_number: r.pick_number as number,
+      player_display_name: String((r as any).player_display_name ?? ''), // v_pick_results guarantees this
+      team_short: String((r as any).team_short ?? ''),
+      home_short: String((r as any).home_short ?? ''),
+      away_short: String((r as any).away_short ?? ''),
+      spread_at_pick: (r as any).spread_at_pick == null ? null : Number((r as any).spread_at_pick),
+    })));
 
-    // 3) O/U taken so far
+    // 3) O/U so far
     const { data: ou } = await supabase
-      .from('v_ou_results') // view that includes player_display_name; falls back to 'ou_picks' if needed
+      .from('v_ou_results')
       .select('id,season_year,week_number,player_display_name,home_short,away_short,pick_side,total_at_pick')
       .eq('season_year', YEAR)
       .eq('week_number', w);
 
-    setOuPicks((Array.isArray(ou) ? ou : []) as OuPickRow[]);
-
-    setLoading(false);
+    const ouRows = Array.isArray(ou) ? ou : [];
+    setOuPicks(ouRows.map((r) => ({
+      id: r.id as number,
+      season_year: r.season_year as number,
+      week_number: r.week_number as number,
+      player_display_name: String((r as any).player_display_name ?? ''),
+      home_short: String((r as any).home_short ?? ''),
+      away_short: String((r as any).away_short ?? ''),
+      pick_side: String((r as any).pick_side ?? 'OVER').toUpperCase() === 'UNDER' ? 'UNDER' : 'OVER',
+      total_at_pick: (r as any).total_at_pick == null ? null : Number((r as any).total_at_pick),
+    })));
   }
 
   useEffect(() => { loadAll(week); }, [week]);
@@ -120,48 +173,59 @@ export default function DraftPage() {
   useEffect(() => {
     const ch = supabase
       .channel('draft-live')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'picks' },
-        payload => {
-          const row = payload.new as any;
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'picks' },
+        (payload: RealtimePostgresChangesPayload<PickTableRow>) => {
+          const row = payload.new;
           if (!row || row.season_year !== YEAR || row.week_number !== week) return;
+
+          const mapped: PickRow = {
+            id: row.id,
+            season_year: row.season_year,
+            week_number: row.week_number,
+            pick_number: row.pick_number,
+            player_display_name: String(row.player_display_name ?? row.player_name ?? ''),
+            team_short: row.team_short,
+            home_short: row.home_short,
+            away_short: row.away_short,
+            spread_at_pick: row.spread_at_pick,
+          };
+
           setPicks(prev => {
             const existing = prev.find(p => p.id === row.id);
-            const mapped: PickRow = {
-              id: row.id,
-              season_year: row.season_year,
-              week_number: row.week_number,
-              pick_number: row.pick_number,
-              player_display_name: row.player_display_name ?? row.player_name ?? '', // view may populate this
-              team_short: row.team_short,
-              home_short: row.home_short,
-              away_short: row.away_short,
-              spread_at_pick: row.spread_at_pick,
-            };
-            if (existing) return prev.map(p => p.id === row.id ? mapped : p);
-            return [...prev, mapped].sort((a,b)=>a.pick_number-b.pick_number);
+            if (existing) return prev.map(p => (p.id === row.id ? mapped : p));
+            return [...prev, mapped].sort((a, b) => a.pick_number - b.pick_number);
           });
-        })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'ou_picks' },
-        payload => {
-          const row = payload.new as any;
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'ou_picks' },
+        (payload: RealtimePostgresChangesPayload<OuTableRow>) => {
+          const row = payload.new;
           if (!row || row.season_year !== YEAR || row.week_number !== week) return;
+
+          const mapped: OuPickRow = {
+            id: row.id,
+            season_year: row.season_year,
+            week_number: row.week_number,
+            player_display_name: String(row.player_display_name ?? row.player_name ?? ''),
+            home_short: row.home_short,
+            away_short: row.away_short,
+            pick_side: row.pick_side,
+            total_at_pick: row.total_at_pick,
+          };
+
           setOuPicks(prev => {
-            const mapped: OuPickRow = {
-              id: row.id,
-              season_year: row.season_year,
-              week_number: row.week_number,
-              player_display_name: row.player_display_name ?? row.player_name ?? '',
-              home_short: row.home_short,
-              away_short: row.away_short,
-              pick_side: row.pick_side,
-              total_at_pick: row.total_at_pick,
-            };
-            const existing = prev.find(x => x.id === row.id);
-            if (existing) return prev.map(x => x.id === row.id ? mapped : x);
+            const existing = prev.find(p => p.id === row.id);
+            if (existing) return prev.map(p => (p.id === row.id ? mapped : p));
             return [...prev, mapped];
           });
-        })
+        }
+      )
       .subscribe();
+
     return () => { supabase.removeChannel(ch); };
   }, [week]);
 
@@ -200,16 +264,13 @@ export default function DraftPage() {
     }
   }
 
-  const playerHasOu = useMemo(() => {
-    const s = new Set(ouPicks.map(o => o.player_display_name));
-    return s;
-  }, [ouPicks]);
+  const playerHasOu = useMemo(() => new Set(ouPicks.map(o => o.player_display_name)), [ouPicks]);
 
-  const atp = { // picks remaining per player (for a small indicator)
+  const atp: Record<string, number> = {
     'Big Dawg': 3 - picks.filter(p => p.player_display_name === 'Big Dawg').length,
     'Pud': 3 - picks.filter(p => p.player_display_name === 'Pud').length,
     'Kinish': 3 - picks.filter(p => p.player_display_name === 'Kinish').length,
-  } as Record<string, number>;
+  };
 
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-8">
@@ -229,7 +290,7 @@ export default function DraftPage() {
         </div>
       </header>
 
-      {/* Board (current market from game_lines) */}
+      {/* Board */}
       <section className="space-y-2">
         <p className="text-sm text-zinc-400">
           Showing <em>current market</em> numbers from <code>game_lines</code>. Picks store the line at pick-time.
@@ -240,8 +301,8 @@ export default function DraftPage() {
             <div className="col-span-1 text-right">Spread</div>
             <div className="col-span-1 text-right">Total</div>
           </div>
-          {board.map((r, i) => (
-            <div key={`${r.home}-${r.away}-${i}`} className="grid grid-cols-12 px-3 py-2 border-t border-zinc-800 text-sm">
+          {board.map((r) => (
+            <div key={`${r.home}-${r.away}`} className="grid grid-cols-12 px-3 py-2 border-t border-zinc-800 text-sm">
               <div className="col-span-10 flex items-center gap-2">
                 <TinyLogo s={r.home} />
                 <span className="w-10">{r.home}</span>
@@ -339,11 +400,10 @@ export default function DraftPage() {
         ) : (
           <div className="border rounded p-3">
             <div className="mb-3 font-medium">ATS complete — O/U tie-breakers</div>
-            {PLAYERS.map(name => {
+            {(['Big Dawg','Pud','Kinish'] as string[]).map(name => {
               const already = playerHasOu.has(name);
-              const meOnClock =
-                (already ? null : name) ===
-                (['Big Dawg','Pud','Kinish'].find(n => !playerHasOu.has(n)) ?? null);
+              const nextOu = (['Big Dawg','Pud','Kinish'] as string[]).find(n => !playerHasOu.has(n)) ?? null;
+              const meOnClock = !already && name === nextOu;
 
               return (
                 <div key={name} className={`flex items-center justify-between py-2 border-t border-zinc-800 ${meOnClock ? 'bg-zinc-900/50' : ''}`}>
