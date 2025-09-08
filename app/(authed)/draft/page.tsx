@@ -79,6 +79,33 @@ function signed(n: number | null | undefined) {
   return n > 0 ? `+${n}` : `${n}`;
 }
 
+function isRecord(x: unknown): x is Record<string, unknown> {
+  return typeof x === 'object' && x !== null;
+}
+function isPickTableRow(x: unknown): x is PickTableRow {
+  return (
+    isRecord(x) &&
+    typeof x.id === 'number' &&
+    typeof x.season_year === 'number' &&
+    typeof x.week_number === 'number' &&
+    typeof x.pick_number === 'number' &&
+    typeof x.team_short === 'string' &&
+    typeof x.home_short === 'string' &&
+    typeof x.away_short === 'string'
+  );
+}
+function isOuTableRow(x: unknown): x is OuTableRow {
+  return (
+    isRecord(x) &&
+    typeof x.id === 'number' &&
+    typeof x.season_year === 'number' &&
+    typeof x.week_number === 'number' &&
+    typeof x.home_short === 'string' &&
+    typeof x.away_short === 'string' &&
+    (x.pick_side === 'OVER' || x.pick_side === 'UNDER')
+  );
+}
+
 /* 3-player snake, 9 ATS picks */
 const snakeOrder: string[] = [
   PLAYERS[0], PLAYERS[1], PLAYERS[2],
@@ -129,14 +156,14 @@ export default function DraftPage() {
     // 2) Picks so far
     const { data: sp } = await supabase
       .from('v_pick_results')
-      .select('id,season_year,week_number,pick_number,player_display_name,team_short,home_short,away_short,spread_at_pick')
+      .select('id,season_year,week_number,pick_number,player_display_name,player_name,team_short,home_short,away_short,spread_at_pick')
       .eq('season_year', YEAR)
       .eq('week_number', w)
       .order('pick_number', { ascending: true });
 
-    const spRows: PickTableRow[] = Array.isArray(sp) ? (sp as unknown[] as PickTableRow[]) : [];
+    const spRows: unknown[] = Array.isArray(sp) ? sp : [];
     setPicks(
-      spRows.map((r): PickRow => ({
+      spRows.filter(isPickTableRow).map((r): PickRow => ({
         id: r.id,
         season_year: r.season_year,
         week_number: r.week_number,
@@ -152,20 +179,20 @@ export default function DraftPage() {
     // 3) O/U so far
     const { data: ou } = await supabase
       .from('v_ou_results')
-      .select('id,season_year,week_number,player_display_name,home_short,away_short,pick_side,total_at_pick')
+      .select('id,season_year,week_number,player_display_name,player_name,home_short,away_short,pick_side,total_at_pick')
       .eq('season_year', YEAR)
       .eq('week_number', w);
 
-    const ouRows: OuTableRow[] = Array.isArray(ou) ? (ou as unknown[] as OuTableRow[]) : [];
+    const ouRows: unknown[] = Array.isArray(ou) ? ou : [];
     setOuPicks(
-      ouRows.map((r): OuPickRow => ({
+      ouRows.filter(isOuTableRow).map((r): OuPickRow => ({
         id: r.id,
         season_year: r.season_year,
         week_number: r.week_number,
         player_display_name: (r.player_display_name ?? r.player_name ?? '') || '',
         home_short: r.home_short,
         away_short: r.away_short,
-        pick_side: r.pick_side === 'UNDER' ? 'UNDER' : 'OVER',
+        pick_side: r.pick_side,
         total_at_pick: r.total_at_pick,
       }))
     );
@@ -173,7 +200,7 @@ export default function DraftPage() {
 
   useEffect(() => { loadAll(week); }, [week]);
 
-  // realtime: picks + O/U
+  // realtime: picks + O/U with safe guards
   useEffect(() => {
     const ch = supabase
       .channel('draft-live')
@@ -181,24 +208,25 @@ export default function DraftPage() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'picks' },
         (payload: RealtimePostgresChangesPayload<PickTableRow>) => {
-          const row = payload.new;
-          if (!row || row.season_year !== YEAR || row.week_number !== week) return;
+          const rowUnknown = payload.new as unknown;
+          if (!isPickTableRow(rowUnknown)) return;
+          if (rowUnknown.season_year !== YEAR || rowUnknown.week_number !== week) return;
 
           const mapped: PickRow = {
-            id: row.id,
-            season_year: row.season_year,
-            week_number: row.week_number,
-            pick_number: row.pick_number,
-            player_display_name: (row.player_display_name ?? row.player_name ?? '') || '',
-            team_short: row.team_short,
-            home_short: row.home_short,
-            away_short: row.away_short,
-            spread_at_pick: row.spread_at_pick,
+            id: rowUnknown.id,
+            season_year: rowUnknown.season_year,
+            week_number: rowUnknown.week_number,
+            pick_number: rowUnknown.pick_number,
+            player_display_name: (rowUnknown.player_display_name ?? rowUnknown.player_name ?? '') || '',
+            team_short: rowUnknown.team_short,
+            home_short: rowUnknown.home_short,
+            away_short: rowUnknown.away_short,
+            spread_at_pick: rowUnknown.spread_at_pick,
           };
 
           setPicks(prev => {
-            const existing = prev.find(p => p.id === row.id);
-            if (existing) return prev.map(p => (p.id === row.id ? mapped : p));
+            const existing = prev.find(p => p.id === mapped.id);
+            if (existing) return prev.map(p => (p.id === mapped.id ? mapped : p));
             return [...prev, mapped].sort((a, b) => a.pick_number - b.pick_number);
           });
         }
@@ -207,23 +235,24 @@ export default function DraftPage() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'ou_picks' },
         (payload: RealtimePostgresChangesPayload<OuTableRow>) => {
-          const row = payload.new;
-          if (!row || row.season_year !== YEAR || row.week_number !== week) return;
+          const rowUnknown = payload.new as unknown;
+          if (!isOuTableRow(rowUnknown)) return;
+          if (rowUnknown.season_year !== YEAR || rowUnknown.week_number !== week) return;
 
           const mapped: OuPickRow = {
-            id: row.id,
-            season_year: row.season_year,
-            week_number: row.week_number,
-            player_display_name: (row.player_display_name ?? row.player_name ?? '') || '',
-            home_short: row.home_short,
-            away_short: row.away_short,
-            pick_side: row.pick_side,
-            total_at_pick: row.total_at_pick,
+            id: rowUnknown.id,
+            season_year: rowUnknown.season_year,
+            week_number: rowUnknown.week_number,
+            player_display_name: (rowUnknown.player_display_name ?? rowUnknown.player_name ?? '') || '',
+            home_short: rowUnknown.home_short,
+            away_short: rowUnknown.away_short,
+            pick_side: rowUnknown.pick_side,
+            total_at_pick: rowUnknown.total_at_pick,
           };
 
           setOuPicks(prev => {
-            const existing = prev.find(p => p.id === row.id);
-            if (existing) return prev.map(p => (p.id === row.id ? mapped : p));
+            const existing = prev.find(p => p.id === mapped.id);
+            if (existing) return prev.map(p => (p.id === mapped.id ? mapped : p));
             return [...prev, mapped];
           });
         }
