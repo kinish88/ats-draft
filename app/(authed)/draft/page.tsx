@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
@@ -12,6 +12,8 @@ const LOGO_BASE =
   (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/, '') || null;
 
 /* ---------------------------------- types ---------------------------------- */
+
+type WeekRow = { week_number: number };
 
 type DraftBoardRpcRow = {
   home_short?: unknown;
@@ -51,12 +53,7 @@ function teamLogo(short?: string | null) {
   return LOGO_BASE ? `${LOGO_BASE}/${short}.png` : `/teams/${short}.png`;
 }
 
-function signed(n: number | null | undefined) {
-  if (n == null) return '—';
-  return n > 0 ? `+${n}` : `${n}`;
-}
-
-// New: render “Pick’em” when spread is 0
+// Render “Pick'em” when spread is 0
 function spreadText(n: number | null | undefined) {
   if (n == null) return '—';
   const x = Number(n);
@@ -75,8 +72,6 @@ function asNum(x: unknown): number | null {
 function asStr(x: unknown): string {
   return typeof x === 'string' ? x : x == null ? '' : String(x);
 }
-
-/* --------------------------------- cells/ui -------------------------------- */
 
 function TinyLogo({ s, alt }: { s: string | null; alt: string }) {
   if (!s) return <span className="inline-block w-4 h-4 align-middle" />;
@@ -104,11 +99,12 @@ export default function DraftPage() {
   useEffect(() => {
     (async () => {
       const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
-      const w =
-        (Array.isArray(data) ? data : [])
-          .map((r: any) => r?.week_number)
-          .filter((n: unknown): n is number => typeof n === 'number') || [];
-      setWeeks(w.length ? w : Array.from({ length: 18 }, (_, i) => i + 1));
+      const rows: WeekRow[] = Array.isArray(data)
+        ? (data as unknown[]).flatMap((r) =>
+            typeof (r as any)?.week_number === 'number' ? [{ week_number: (r as any).week_number as number }] : []
+          )
+        : [];
+      setWeeks(rows.length ? rows.map((r) => r.week_number) : Array.from({ length: 18 }, (_, i) => i + 1));
     })();
   }, []);
 
@@ -155,7 +151,7 @@ export default function DraftPage() {
     const arr = Array.isArray(data) ? (data as PickTableRow[]) : [];
     setPicks(arr);
 
-    // compute whose turn (very simple snake: 1..9 forward; O/U after is separate)
+    // simple rotation
     const taken = arr.length % PLAYERS.length;
     setOnClockIdx(taken);
   };
@@ -186,7 +182,6 @@ export default function DraftPage() {
             );
           });
 
-          // update clock (simple rotation)
           setOnClockIdx((i) => (i + 1) % PLAYERS.length);
         }
       )
@@ -202,13 +197,10 @@ export default function DraftPage() {
   const currentPlayer = PLAYERS[onClockIdx] || PLAYERS[0];
 
   const onPickTeam = async (home: string, away: string, team: string) => {
-    // at pick time store numbers displayed
     const row = board.find((g) => g.home === home && g.away === away);
     const spread = row?.spread ?? null;
     const total = row?.total ?? null;
 
-    // This assumes you already have a RPC or policy to insert into `picks`.
-    // If your project uses a different RPC name, keep it — only the payload matters.
     await supabase.rpc('make_spread_pick', {
       p_year: YEAR,
       p_week: week,
@@ -220,13 +212,6 @@ export default function DraftPage() {
       p_total_at_pick: total,
     });
   };
-
-  /* -------------------------------- derived -------------------------------- */
-
-  const boardPairs = useMemo(() => {
-    // keep original order
-    return board.map((g) => `${g.home}-${g.away}`);
-  }, [board]);
 
   /* -------------------------------- render --------------------------------- */
 
@@ -254,8 +239,7 @@ export default function DraftPage() {
       {/* board table */}
       <section>
         <p className="text-xs opacity-70 mb-2">
-          Showing <em>current market</em> numbers from <code>game_lines</code>.
-          Picks store the line at pick-time.
+          Showing <em>current market</em> numbers from <code>game_lines</code>. Picks store the line at pick-time.
         </p>
 
         <div className="border rounded overflow-hidden">
@@ -272,11 +256,7 @@ export default function DraftPage() {
               >
                 <div className="flex items-center gap-2">
                   <TinyLogo s={teamLogo(r.home)} alt={r.home} />
-                  <span
-                    className={`w-10 ${
-                      r.fav === r.home ? 'font-semibold' : ''
-                    }`}
-                  >
+                  <span className={`w-10 ${r.fav === r.home ? 'font-semibold' : ''}`}>
                     {r.home}
                   </span>
                   {r.fav === r.home && (
@@ -287,11 +267,7 @@ export default function DraftPage() {
                   )}
                   <span className="mx-1 opacity-60">v</span>
                   <TinyLogo s={teamLogo(r.away)} alt={r.away} />
-                  <span
-                    className={`w-10 ${
-                      r.fav === r.away ? 'font-semibold' : ''
-                    }`}
-                  >
+                  <span className={`w-10 ${r.fav === r.away ? 'font-semibold' : ''}`}>
                     {r.away}
                   </span>
                   {r.fav === r.away && (
@@ -319,18 +295,19 @@ export default function DraftPage() {
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-medium">Live Draft</h2>
           <div className="text-sm opacity-70">
-            {PLAYERS.map((p, i) => (
-              <span key={p} className={i ? 'ml-3' : ''}>
-                {p} ({(9 - picks.filter((x) => x.player_display_name === p).length) || 0}{' '}
-                left)
-              </span>
-            ))}
+            {PLAYERS.map((p, i) => {
+              const remaining = 9 - picks.filter((x) => x.player_display_name === p).length;
+              return (
+                <span key={p} className={i ? 'ml-3' : ''}>
+                  {p} ({remaining} left)
+                </span>
+              );
+            })}
           </div>
         </div>
 
         <div className="text-sm">
-          On the clock:{' '}
-          <span className="font-semibold">{currentPlayer}</span>{' '}
+          On the clock: <span className="font-semibold">{currentPlayer}</span>{' '}
           <span className="opacity-70">Pick #{picks.length + 1}</span>
         </div>
 
@@ -352,8 +329,7 @@ export default function DraftPage() {
                     ({p.home_short} v {p.away_short})
                   </span>
                   <span className="ml-auto opacity-70 tabular-nums">
-                    {spreadText(p.spread_at_pick)} /{' '}
-                    {p.total_at_pick == null ? '—' : p.total_at_pick}
+                    {spreadText(p.spread_at_pick)} / {p.total_at_pick == null ? '—' : p.total_at_pick}
                   </span>
                 </div>
               ))}
