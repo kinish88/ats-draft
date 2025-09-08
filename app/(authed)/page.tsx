@@ -4,34 +4,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
-// ---------- constants ----------
 const YEAR = 2025;
-const LOGO_BASE = (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE ?? '').replace(/\/?$/, '/');
 
-// Short -> Full (for the bold team name on the pick)
-const TEAM_FULL: Record<string, string> = {
-  ARI: 'Arizona Cardinals', ATL: 'Atlanta Falcons', BAL: 'Baltimore Ravens', BUF: 'Buffalo Bills',
-  CAR: 'Carolina Panthers', CHI: 'Chicago Bears', CIN: 'Cincinnati Bengals', CLE: 'Cleveland Browns',
-  DAL: 'Dallas Cowboys', DEN: 'Denver Broncos', DET: 'Detroit Lions', GB: 'Green Bay Packers',
-  HOU: 'Houston Texans', IND: 'Indianapolis Colts', JAX: 'Jacksonville Jaguars', KC: 'Kansas City Chiefs',
-  LV: 'Las Vegas Raiders', LAC: 'Los Angeles Chargers', LAR: 'Los Angeles Rams', MIA: 'Miami Dolphins',
-  MIN: 'Minnesota Vikings', NE: 'New England Patriots', NO: 'New Orleans Saints', NYG: 'New York Giants',
-  NYJ: 'New York Jets', PHI: 'Philadelphia Eagles', PIT: 'Pittsburgh Steelers', SF: 'San Francisco 49ers',
-  SEA: 'Seattle Seahawks', TB: 'Tampa Bay Buccaneers', TEN: 'Tennessee Titans', WAS: 'Washington Commanders',
-};
+/* ------------------------------- data types ------------------------------- */
 
-// Full -> Short fallback (if the RPC returns full team names)
-const FULL_TO_SHORT: Record<string, string> = Object.fromEntries(
-  Object.entries(TEAM_FULL).map(([s, f]) => [f.toLowerCase(), s])
-);
-
-// ---------- types ----------
 type WeekRow = { week_number: number };
 
 type GameRow = {
   id: number;
-  home: string; // short e.g. 'BUF'
-  away: string; // short e.g. 'BAL'
+  home: string;           // short, e.g. 'PHI'
+  away: string;           // short, e.g. 'DAL'
   home_score: number | null;
   away_score: number | null;
   live_home_score: number | null;
@@ -40,81 +22,84 @@ type GameRow = {
   is_live: boolean | null;
 };
 
-type RawGame = Partial<GameRow> & { id?: number; game_id?: number; home: string; away: string; kickoff?: string };
+type BaseGameIdRow = { game_id: number };
 
-type SpreadPickPublic = {
+type AdminSpreadRow = {
+  pick_id?: number;
   pick_number: number;
-  picker: string;          // display name
-  picked_team: string;     // short or full
-  matchup: string;         // "BUF v BAL"
+  player: string;
+  home_short: string;
+  away_short: string;
+  team_short: string;
   spread_at_pick: number | null;
 };
 
-type OuPickPublic = {
-  picker: string;          // display name
-  matchup: string;         // "BUF v BAL"
-  pick_side: 'OVER' | 'UNDER';
+type SpreadPickRow = {
+  pick_number: number;
+  player_display_name: string;
+  team_short: string;
+  spread: number | null;
+  home_short: string;
+  away_short: string;
+};
+
+type AdminOuRow = {
+  player: string;
+  home_short: string;
+  away_short: string;
+  pick_side: string;     // may be mixed case / whitespace
   total_at_pick: number;
 };
 
-type Outcome = 'win' | 'loss' | 'push' | 'pending';
+type OuPickRow = {
+  player_display_name: string;
+  home_short: string;
+  away_short: string;
+  ou_choice: 'OVER' | 'UNDER';
+  ou_total: number;
+};
 
-// ---------- utils ----------
-
-function hasId(obj: unknown): obj is { id: number } {
-  return !!obj && typeof (obj as { id?: unknown }).id === 'number';
+function isGameRow(x: unknown): x is GameRow {
+  if (!x || typeof x !== 'object') return false;
+  const r = x as Record<string, unknown>;
+  return typeof r.id === 'number' && typeof r.home === 'string' && typeof r.away === 'string';
 }
 
-function parseMatchup(m: string): { home: string; away: string } | null {
-  const parts = m.split(' v ');
-  if (parts.length !== 2) return null;
-  return { home: parts[0].trim().toUpperCase(), away: parts[1].trim().toUpperCase() };
-}
+/* --------------------------------- config -------------------------------- */
 
-function toShortTeam(nameOrShort: string): string {
-  const s = nameOrShort.toUpperCase();
-  if (TEAM_FULL[s]) return s; // already short
-  const short = FULL_TO_SHORT[nameOrShort.toLowerCase()];
-  return short ?? s;
-}
+const LOGO_BASE = (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/, '') || null;
 
-function logoUrl(short?: string | null): string | null {
-  if (!short) return null;
-  return `${LOGO_BASE}${short}.png`;
-}
-
-function crestUrl(): string | null {
-  return `${LOGO_BASE}NFL.png`;
-}
+/* --------------------------------- utils --------------------------------- */
 
 function signed(n: number | null | undefined): string {
-  if (n == null) return '';
+  if (n === null || n === undefined) return '';
   return n > 0 ? `+${n}` : `${n}`;
 }
 
-function outcomeClass(o: Outcome): string {
-  if (o === 'win') return 'text-emerald-400';
-  if (o === 'loss') return 'text-rose-400';
-  if (o === 'push') return 'text-zinc-300';
-  return 'text-zinc-400';
+function teamLogo(short?: string | null): string | null {
+  if (!short) return null;
+  return LOGO_BASE ? `${LOGO_BASE}/${short}.png` : `/teams/${short}.png`;
 }
 
-function calcATSPending(game?: GameRow | null): boolean {
-  if (!game) return true;
-  const hasFinal = game.home_score != null && game.away_score != null;
-  const hasLive = game.live_home_score != null && game.live_away_score != null;
-  return !(hasFinal || hasLive);
+function matchup(a?: string, b?: string): string {
+  if (!a || !b) return '';
+  return `${a} v ${b}`;
 }
 
-function pickOutcomeATS(game: GameRow | undefined, pickedShort: string, spreadForPick: number | null): Outcome {
-  if (!game || spreadForPick == null) return 'pending';
+type Outcome = 'win' | 'loss' | 'push' | 'pending';
+
+function pickOutcomeATS(game: GameRow | undefined, pickedTeam: string, spreadForPick: number | null): Outcome {
+  if (!game) return 'pending';
   const hasFinal = game.home_score != null && game.away_score != null;
   const hasLive = game.live_home_score != null && game.live_away_score != null;
+
   const home = hasFinal ? game.home_score : hasLive ? game.live_home_score : null;
   const away = hasFinal ? game.away_score : hasLive ? game.live_away_score : null;
-  if (home == null || away == null) return 'pending';
 
-  const pickIsHome = pickedShort === game.home;
+  if (home == null || away == null) return 'pending';
+  if (spreadForPick == null) return 'pending';
+
+  const pickIsHome = pickedTeam === game.home;
   const pickScore = pickIsHome ? home : away;
   const oppScore = pickIsHome ? away : home;
 
@@ -128,156 +113,217 @@ function pickOutcomeOU(game: GameRow | undefined, choice: 'OVER' | 'UNDER', tota
   if (!game) return 'pending';
   const hasFinal = game.home_score != null && game.away_score != null;
   const hasLive = game.live_home_score != null && game.live_away_score != null;
+
   const home = hasFinal ? game.home_score : hasLive ? game.live_home_score : null;
   const away = hasFinal ? game.away_score : hasLive ? game.live_away_score : null;
+
   if (home == null || away == null) return 'pending';
 
-  const sum = home + away;
+  const sum = (home ?? 0) + (away ?? 0);
   if (sum === total) return 'push';
-  return choice === 'OVER' ? (sum > total ? 'win' : 'loss') : (sum < total ? 'win' : 'loss');
+  if (choice === 'OVER') return sum > total ? 'win' : 'loss';
+  return sum < total ? 'win' : 'loss';
 }
 
-// ---------- tiny cells ----------
-function TinyLogo({ url, alt }: { url: string | null; alt: string }) {
-  if (!url) return <span className="inline-block w-4 h-4 mr-2 align-middle" />;
-  return <img alt={alt} src={url} className="inline-block w-4 h-4 mr-2 rounded-sm align-middle" loading="eager" />;
+function outcomeClass(o: Outcome): string {
+  if (o === 'win') return 'text-emerald-400';
+  if (o === 'loss') return 'text-rose-400';
+  if (o === 'push') return 'text-zinc-300';
+  return 'text-zinc-400';
+}
+
+function scoreInfo(game?: GameRow): { text: string; isLive: boolean; isFinal: boolean } {
+  if (!game) return { text: '—', isLive: false, isFinal: false };
+  const hasFinal = game.home_score != null && game.away_score != null;
+  const hasLive = game.live_home_score != null && game.live_away_score != null;
+
+  const home = hasFinal ? game.home_score : hasLive ? game.live_home_score : null;
+  const away = hasFinal ? game.away_score : hasLive ? game.live_away_score : null;
+
+  if (home == null || away == null) return { text: '—', isLive: false, isFinal: false };
+  return {
+    text: `${home}–${away}`,
+    isLive: Boolean(game.is_live) || (!hasFinal && hasLive),
+    isFinal: Boolean(game.is_final) || hasFinal,
+  };
+}
+
+/* --------------------------------- cells --------------------------------- */
+
+function TinyLogo({ url, alt, className }: { url: string | null; alt: string; className?: string }) {
+  if (!url) return <span className={`inline-block align-middle ${className || 'w-4 h-4 mr-2'}`} />;
+  return <img alt={alt} src={url} className={`inline-block rounded-sm align-middle ${className || 'w-4 h-4 mr-2'}`} loading="eager" />;
 }
 
 function StatusPill({ outcome }: { outcome: Outcome }) {
-  const txt = outcome === 'pending' ? 'pending' : outcome;
-  return <span className={outcomeClass(outcome)}>{txt}</span>;
+  const classes = outcomeClass(outcome);
+  const text = outcome === 'pending' ? 'pending' : outcome === 'push' ? 'push' : outcome === 'win' ? 'win' : 'loss';
+  return <span className={`${classes}`}>{text}</span>;
 }
 
-// ============================== PAGE =======================================
+/* --------------------------------- page ---------------------------------- */
+
 export default function ScoreboardPage() {
   const [week, setWeek] = useState<number>(1);
   const [weeks, setWeeks] = useState<number[]>([]);
   const [games, setGames] = useState<GameRow[]>([]);
-  const [spreadPicks, setSpreadPicks] = useState<SpreadPickPublic[]>([]);
-  const [ouPicks, setOuPicks] = useState<OuPickPublic[]>([]);
-  const [showBoard, setShowBoard] = useState<boolean>(false);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [spreadPicks, setSpreadPicks] = useState<SpreadPickRow[]>([]);
+  const [ouPicks, setOuPicks] = useState<OuPickRow[]>([]);
+  const [showBoard, setShowBoard] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  // ---- load weeks once
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
-      const arr = (data ?? []) as WeekRow[];
-      const list = arr.map(w => w.week_number);
-      setWeeks(list.length ? list : Array.from({ length: 18 }, (_, i) => i + 1));
-    })();
-  }, []);
+  /* ------------------------------ load weeks ------------------------------ */
 
-  // ---- load all data for week
+  const loadWeeks = async () => {
+    const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
+    const list = Array.isArray(data) ? (data as WeekRow[]).map(w => w.week_number) : [];
+    setWeeks(list.length ? list : Array.from({ length: 18 }, (_, i) => i + 1));
+  };
+
+  /* ------------------------------- load all ------------------------------- */
+
   const loadAll = async (w: number) => {
     setLoading(true);
-    const [sp, ou, gms] = await Promise.all([
-      supabase.rpc('get_week_spread_picks', { p_year: YEAR, p_week: w }),
-      supabase.rpc('get_week_ou_picks', { p_year: YEAR, p_week: w }),
-      supabase.rpc('get_week_games_for_scoring', { p_year: YEAR, p_week: w }),
+
+    // 1) ids for the week
+    const { data: baseGames } = await supabase.rpc('get_week_games_for_scoring', { p_year: YEAR, p_week: w });
+    const ids = (Array.isArray(baseGames) ? (baseGames as BaseGameIdRow[]) : []).map(r => Number(r.game_id));
+
+    // 2) full game rows (include live columns)
+    let fullGames: GameRow[] = [];
+    if (ids.length) {
+      const { data: rows } = await supabase
+        .from('games')
+        .select('id,home,away,home_score,away_score,live_home_score,live_away_score,is_final,is_live')
+        .in('id', ids);
+
+      fullGames = (rows ?? []).map(r => ({
+        id: Number(r.id),
+        home: r.home,
+        away: r.away,
+        home_score: r.home_score ?? null,
+        away_score: r.away_score ?? null,
+        live_home_score: r.live_home_score ?? null,
+        live_away_score: r.live_away_score ?? null,
+        is_final: (typeof r.is_final === 'boolean'
+          ? r.is_final
+          : (r.home_score != null && r.away_score != null)) as boolean,
+        is_live: (typeof r.is_live === 'boolean' ? r.is_live : null) as boolean | null,
+      }));
+    }
+    setGames(fullGames);
+
+    // 3) picks
+    const [{ data: sp }, { data: ou }] = await Promise.all([
+      supabase.rpc('get_week_spread_picks_admin', { p_year: YEAR, p_week: w }),
+      supabase.rpc('get_week_ou_picks_admin', { p_year: YEAR, p_week: w }),
     ]);
 
-    // games
-    const gmsRaw: unknown[] = (gms.data ?? []) as unknown[];
-    const gmsNorm: GameRow[] = (gmsRaw as RawGame[]).map((r) => ({
-      id: Number(r.id ?? r.game_id),
-      home: r.home.toUpperCase(),
-      away: r.away.toUpperCase(),
-      home_score: r.home_score ?? null,
-      away_score: r.away_score ?? null,
-      live_home_score: (r as RawGame).live_home_score ?? null,
-      live_away_score: (r as RawGame).live_away_score ?? null,
-      is_final: (r as RawGame).is_final ?? (r.home_score != null && r.away_score != null),
-      is_live: (r as RawGame).is_live ?? null,
+    const spMapped: SpreadPickRow[] = (Array.isArray(sp) ? (sp as AdminSpreadRow[]) : []).map(r => ({
+      pick_number: r.pick_number,
+      player_display_name: r.player,
+      team_short: r.team_short,
+      spread: r.spread_at_pick,
+      home_short: r.home_short,
+      away_short: r.away_short,
     }));
-    setGames(gmsNorm);
+    setSpreadPicks(spMapped);
 
-    // spread picks
-    setSpreadPicks(((sp.data ?? []) as SpreadPickPublic[]).map(p => ({
-      ...p,
-      picker: p.picker, // keep as-is
-      picked_team: toShortTeam(p.picked_team),
-    })));
-
-    // ou picks
-    setOuPicks(((ou.data ?? []) as OuPickPublic[]).map(r => ({
-      ...r,
-      pick_side: r.pick_side === 'UNDER' ? 'UNDER' : 'OVER',
-    })));
+    const ouMapped: OuPickRow[] = (Array.isArray(ou) ? (ou as AdminOuRow[]) : []).map(r => {
+      const side = String(r.pick_side).trim().toUpperCase() === 'UNDER' ? 'UNDER' : 'OVER';
+      return {
+        player_display_name: r.player,
+        home_short: r.home_short,
+        away_short: r.away_short,
+        ou_choice: side,
+        ou_total: r.total_at_pick,
+      };
+    });
+    setOuPicks(ouMapped);
 
     setLoading(false);
   };
 
   useEffect(() => {
+    loadWeeks();
+  }, []);
+
+  useEffect(() => {
     loadAll(week);
   }, [week]);
 
-  // ---- realtime: update any games in our current list
+  /* ------------------------------ realtime live --------------------------- */
+
   useEffect(() => {
-  if (!games.length) return;
+    if (!games.length) return;
 
-  const idSet = new Set(games.map(g => g.id));
+    const idSet = new Set(games.map(g => g.id));
+    const chan = supabase
+      .channel('live-games')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'games' },
+        (payload: RealtimePostgresChangesPayload<GameRow>) => {
+          const rowUnknown = payload.new as unknown;
+          if (!isGameRow(rowUnknown) || !idSet.has(rowUnknown.id)) return;
+          setGames(prev => prev.map(g => (g.id === rowUnknown.id ? { ...g, ...rowUnknown } : g)));
+        }
+      )
+      .subscribe();
 
-  const chan = supabase
-    .channel('scoreboard-games')
-    .on(
-      'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'games' },
-      (payload: RealtimePostgresChangesPayload<Partial<GameRow>>) => {
-        const row = payload.new;
-        if (!hasId(row) || !idSet.has(row.id)) return;
+    return () => {
+      supabase.removeChannel(chan);
+    };
+  }, [games]);
 
-        setGames(prev =>
-          prev.map(g => (g.id === row.id ? { ...g, ...(row as Partial<GameRow>) } : g))
-        );
-      }
-    )
-    .subscribe();
+  /* ------------------------------ derived maps ---------------------------- */
 
-  return () => {
-    supabase.removeChannel(chan);
-  };
-}, [games]);
+  const playersOrdered = ['Big Dawg', 'Pud', 'Kinish'];
 
-
-  // ---- derived
   const gameByPair = useMemo(() => {
     const m = new Map<string, GameRow>();
     for (const g of games) m.set(`${g.home}-${g.away}`, g);
     return m;
   }, [games]);
 
-  const playersOrdered = ['Big Dawg', 'Pud', 'Kinish'];
-
   const picksByPlayer = useMemo(() => {
-    const groups = new Map<string, SpreadPickPublic[]>();
-    for (const name of playersOrdered) groups.set(name, []);
+    const m = new Map<string, SpreadPickRow[]>();
+    for (const name of playersOrdered) m.set(name, []);
     for (const p of spreadPicks) {
-      const arr = groups.get(p.picker) ?? [];
-      arr.push(p);
-      groups.set(p.picker, arr);
+      const key = p.player_display_name ?? 'Unknown';
+      if (!m.has(key)) m.set(key, []);
+      m.get(key)!.push(p);
     }
-    for (const [, arr] of groups) arr.sort((a, b) => (a.pick_number ?? 0) - (b.pick_number ?? 0));
-    return groups;
+    for (const [, arr] of m) arr.sort((a, b) => (a.pick_number ?? 0) - (b.pick_number ?? 0));
+    return m;
   }, [spreadPicks]);
 
   const ouByPlayer = useMemo(() => {
-    const m = new Map<string, OuPickPublic | null>();
+    const m = new Map<string, OuPickRow | null>();
     for (const name of playersOrdered) m.set(name, null);
-    for (const r of ouPicks) m.set(r.picker, r);
+    for (const r of ouPicks) m.set(r.player_display_name, r);
     return m;
   }, [ouPicks]);
 
-  // ============================== RENDER ===================================
+  /* -------------------------------- render -------------------------------- */
+
+  const nflLogo = teamLogo('NFL');
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
-      {/* header with NFL crest */}
+      {/* small global styles for live flash + final bold */}
+      <style jsx global>{`
+        @keyframes scoreFlash { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+        .score-live { animation: scoreFlash 1s ease-in-out infinite; }
+        .score-final { font-weight: 700; }
+      `}</style>
+
       <header className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <TinyLogo url={crestUrl()} alt="NFL" />
+          <TinyLogo url={nflLogo} alt="NFL" className="w-6 h-6" />
           <h1 className="text-2xl font-semibold">Week {week} Scoreboard</h1>
         </div>
+
         <div className="flex items-center gap-6">
           <div className="flex items-center gap-2">
             <label className="text-sm opacity-70">Week</label>
@@ -286,67 +332,62 @@ export default function ScoreboardPage() {
               value={week}
               onChange={(e) => setWeek(parseInt(e.target.value, 10))}
             >
-              {weeks.map((w) => (
+              {weeks.map(w => (
                 <option key={w} value={w}>Week {w}</option>
               ))}
             </select>
           </div>
+
           <label className="text-sm flex items-center gap-2 select-none">
-            <input type="checkbox" checked={showBoard} onChange={(e) => setShowBoard(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={showBoard}
+              onChange={(e) => setShowBoard(e.target.checked)}
+            />
             Show full scoreboard
           </label>
         </div>
       </header>
 
-      {/* --------------------- PICKS grouped by player ---------------------- */}
+      {/* ------------------------------- PICKS ------------------------------- */}
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Picks</h2>
+
         {loading ? (
           <div className="text-sm text-zinc-400">Loading…</div>
         ) : (
-          playersOrdered.map((player) => {
+          playersOrdered.map(player => {
             const rows = picksByPlayer.get(player) ?? [];
             return (
               <div key={player} className="border rounded p-4">
                 <div className="font-semibold mb-3">{player}</div>
+
                 {rows.length === 0 ? (
                   <div className="text-sm text-zinc-400">No picks</div>
                 ) : (
                   <div className="space-y-2">
-                    {rows.map((r) => {
-                      const parsed = parseMatchup(r.matchup);
-                      const home = parsed?.home ?? '';
-                      const away = parsed?.away ?? '';
-                      const pairKey = `${home}-${away}`;
+                    {rows.map((r, idx) => {
+                      const pairKey = `${r.home_short}-${r.away_short}`;
                       const g = gameByPair.get(pairKey);
-                      const outcome = pickOutcomeATS(g, r.picked_team, r.spread_at_pick);
-
-                      const hasFinal = g?.home_score != null && g?.away_score != null;
-                      const hasLive = g?.live_home_score != null && g?.live_away_score != null;
-                      const sHome = hasFinal ? g?.home_score : hasLive ? g?.live_home_score : null;
-                      const sAway = hasFinal ? g?.away_score : hasLive ? g?.live_away_score : null;
-
-                      const pickShort = r.picked_team;
-                      const pickFull = TEAM_FULL[pickShort] ?? r.picked_team;
+                      const outcome = pickOutcomeATS(g, r.team_short, r.spread ?? null);
+                      const s = scoreInfo(g);
 
                       return (
-                        <div key={`${player}-${r.pick_number}`} className="flex items-center justify-between">
-                          {/* left: pick badge */}
-                          <div className="flex items-center gap-2">
-                            <TinyLogo url={logoUrl(pickShort)} alt={pickShort} />
-                            <span className="font-medium">{pickFull}</span>
-                            <span className="text-zinc-400 text-sm ml-2">
-                              ({home} v {away})
-                            </span>
+                        <div key={`${player}-${idx}`} className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            {/* one logo = picked team */}
+                            <TinyLogo url={teamLogo(r.team_short)} alt={r.team_short} />
+                            {/* Short code in bold (better on mobile) */}
+                            <span className="font-semibold">{r.team_short}</span>
+                            <span className="text-zinc-400 text-sm">({matchup(r.home_short, r.away_short)})</span>
                           </div>
 
-                          {/* right: spread, score, result */}
                           <div className="flex items-center gap-4">
-                            <span className="w-12 text-right tabular-nums">{signed(r.spread_at_pick)}</span>
-                            <span className="w-16 text-right tabular-nums">
-                              {sHome != null && sAway != null ? `${sHome} — ${sAway}` : '— —'}
+                            <span className="w-12 text-right">{signed(r.spread)}</span>
+                            <span className={`tabular-nums text-sm text-zinc-300 ${s.isLive ? 'score-live' : s.isFinal ? 'score-final' : ''}`}>
+                              {s.text}
                             </span>
-                            <StatusPill outcome={calcATSPending(g) ? 'pending' : outcome} />
+                            <StatusPill outcome={outcome} />
                           </div>
                         </div>
                       );
@@ -359,11 +400,13 @@ export default function ScoreboardPage() {
         )}
       </section>
 
-      {/* ----------------------- O/U TIE-BREAKERS -------------------------- */}
+      {/* ---------------------------- O/U TIE-BREAKERS ---------------------------- */}
       <section className="space-y-3">
         <h2 className="text-lg font-medium">O/U Tie-breakers</h2>
-        {playersOrdered.map((name) => {
-          const r = ouByPlayer.get(name);
+
+        {playersOrdered.map(name => {
+          const r = ouByPlayer.get(name) || null;
+
           if (!r) {
             return (
               <div key={name} className="border rounded p-3 text-sm text-zinc-400">
@@ -371,30 +414,25 @@ export default function ScoreboardPage() {
               </div>
             );
           }
-          const parsed = parseMatchup(r.matchup);
-          const home = parsed?.home ?? '';
-          const away = parsed?.away ?? '';
-          const g = gameByPair.get(`${home}-${away}`);
-          const outcome = pickOutcomeOU(g, r.pick_side, r.total_at_pick);
 
-          const hasFinal = g?.home_score != null && g?.away_score != null;
-          const hasLive = g?.live_home_score != null && g?.live_away_score != null;
-          const sHome = hasFinal ? g?.home_score : hasLive ? g?.live_home_score : null;
-          const sAway = hasFinal ? g?.away_score : hasLive ? g?.live_away_score : null;
+          const g = gameByPair.get(`${r.home_short}-${r.away_short}`);
+          const outcome = pickOutcomeOU(g, r.ou_choice, r.ou_total);
+          const s = scoreInfo(g);
 
           return (
             <div key={name} className="border rounded p-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                {/* Single crest for O/U “pick” */}
-                <TinyLogo url={crestUrl()} alt="NFL" />
-                <span className="mr-2">{name}</span>
-                <span className="text-zinc-300">({home} v {away})</span>
-                <span className="ml-3">{r.pick_side}</span>
-                <span className="ml-1">{r.total_at_pick}</span>
+              <div className="flex items-center gap-3">
+                {/* each team once */}
+                <TinyLogo url={teamLogo(r.home_short)} alt={r.home_short} />
+                <TinyLogo url={teamLogo(r.away_short)} alt={r.away_short} />
+                <span className="font-semibold">{name}</span>
+                <span className="text-zinc-300">{matchup(r.home_short, r.away_short)}</span>
+                <span className="ml-3">{r.ou_choice}</span>
+                <span className="ml-1">{r.ou_total}</span>
               </div>
               <div className="flex items-center gap-4">
-                <span className="w-16 text-right tabular-nums">
-                  {sHome != null && sAway != null ? `${sHome} — ${sAway}` : '— —'}
+                <span className={`tabular-nums text-sm text-zinc-300 ${s.isLive ? 'score-live' : s.isFinal ? 'score-final' : ''}`}>
+                  {s.text}
                 </span>
                 <StatusPill outcome={outcome} />
               </div>
@@ -403,31 +441,31 @@ export default function ScoreboardPage() {
         })}
       </section>
 
-      {/* ------------------------- FULL SCOREBOARD -------------------------- */}
+      {/* --------------------------- FULL SCOREBOARD --------------------------- */}
       {showBoard && (
         <section className="space-y-2">
           <h2 className="text-lg font-medium">All Games</h2>
-          {games.map((g) => {
-            const hasFinal = g.home_score != null && g.away_score != null;
-            const hasLive = g.live_home_score != null && g.live_away_score != null;
-            const sHome = hasFinal ? g.home_score : hasLive ? g.live_home_score : null;
-            const sAway = hasFinal ? g.away_score : hasLive ? g.live_away_score : null;
-
-            return (
-              <div key={g.id} className="border rounded p-2 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <TinyLogo url={logoUrl(g.home)} alt={g.home} />
-                  <span className="w-10">{g.home}</span>
-                  <span className="text-sm text-zinc-500">v</span>
-                  <TinyLogo url={logoUrl(g.away)} alt={g.away} />
-                  <span className="w-10">{g.away}</span>
+          {games.length === 0 ? (
+            <div className="text-sm text-zinc-400">No games</div>
+          ) : (
+            games.map(g => {
+              const s = scoreInfo(g);
+              return (
+                <div key={g.id} className="border rounded p-2 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <TinyLogo url={teamLogo(g.home)} alt={g.home} />
+                    <span className="w-10">{g.home}</span>
+                    <span className="text-sm text-zinc-500">v</span>
+                    <TinyLogo url={teamLogo(g.away)} alt={g.away} />
+                    <span className="w-10">{g.away}</span>
+                  </div>
+                  <div className={`tabular-nums ${s.isLive ? 'score-live' : s.isFinal ? 'score-final' : ''}`}>
+                    {s.text}
+                  </div>
                 </div>
-                <div className="tabular-nums">
-                  {sHome != null && sAway != null ? `${sHome} — ${sAway}` : '— —'}
-                </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
         </section>
       )}
     </div>
