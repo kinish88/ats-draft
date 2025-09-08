@@ -1,473 +1,229 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
-import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
-const YEAR = 2025;
-const PLAYERS = ['Big Dawg', 'Pud', 'Kinish'] as const;
-const LOGO_BASE = (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/, '') || null;
-
-/* ----------------------------- types ----------------------------- */
-
-type BoardRow = { home: string; away: string; spread: number | null; total: number | null };
-type DraftBoardRpcRow = { home: unknown; away: unknown; spread: unknown; total: unknown };
+type GameRow = {
+  game_id: number;
+  home: string; away: string;
+  home_spread: number | null; away_spread: number | null;
+  home_taken: boolean; away_taken: boolean;
+  home_logo_url?: string | null; away_logo_url?: string | null;
+};
 
 type PickRow = {
-  id: number;
-  season_year: number;
-  week_number: number;
-  pick_number: number;
-  player_display_name: string;
-  team_short: string;
-  home_short: string;
-  away_short: string;
-  spread_at_pick: number | null;
+  pick_number: number; picker: string; picked_team: string;
+  picked_logo_url?: string | null; matchup: string;
+  spread_at_pick: number;
+  result: 'pending'|'win'|'loss'|'push'|string; colour: 'green'|'red'|'orange'|'grey'|string;
+  created_at: string;
 };
 
-type PickTableRow = {
-  id: number;
-  season_year: number;
-  week_number: number;
-  pick_number: number;
-  player_display_name?: string | null;
-  player_name?: string | null;
-  team_short: string;
-  home_short: string;
-  away_short: string;
-  spread_at_pick: number | null;
+type OUPick = {
+  picker: string; matchup: string; pick_side: 'over'|'under';
+  total_at_pick: number; result: 'pending'|'win'|'loss'|'push'|string; colour: 'green'|'red'|'orange'|'grey'|string;
+  home_logo_url?: string | null; away_logo_url?: string | null;
 };
 
-type OuPickRow = {
-  id: number;
-  season_year: number;
-  week_number: number;
-  player_display_name: string;
-  home_short: string;
-  away_short: string;
-  pick_side: 'OVER' | 'UNDER';
-  total_at_pick: number | null;
-};
+type TotalsRow = { game_id: number; home: string; away: string; total_line: number };
+type TurnRow   = { pick_number: number; display_name: string; email: string };
+type WeekOption = { week_number: number };
 
-type OuTableRow = {
-  id: number;
-  season_year: number;
-  week_number: number;
-  player_display_name?: string | null;
-  player_name?: string | null;
-  home_short: string;
-  away_short: string;
-  pick_side: 'OVER' | 'UNDER';
-  total_at_pick: number | null;
-};
+type MakePickResult   = { ok: boolean; message: string | null };
+type MakeOUPickResult = { ok: boolean; message: string | null };
 
-/* ----------------------------- utils ----------------------------- */
+const YEAR = 2025;
+const formatSigned = (v: number | null | undefined) =>
+  v === null || v === undefined ? 'n/a' : `${v > 0 ? '+' : ''}${v}`;
 
-function teamLogo(short?: string | null) {
-  if (!short) return null;
-  return LOGO_BASE ? `${LOGO_BASE}/${short}.png` : `/teams/${short}.png`;
-}
-function TinyLogo({ s }: { s: string }) {
-  const url = teamLogo(s);
-  return url ? <img src={url} alt={s} className="w-5 h-5 rounded-sm" /> : <span className="w-5 h-5" />;
-}
-function matchup(h: string, a: string) {
-  return `${h} v ${a}`;
-}
-function signed(n: number | null | undefined) {
-  if (n == null) return '—';
-  return n > 0 ? `+${n}` : `${n}`;
-}
 
-function isRecord(x: unknown): x is Record<string, unknown> {
-  return typeof x === 'object' && x !== null;
+function Spread({ v }: { v: number | null }) {
+  if (v === null) return <span className="text-gray-400">n/a</span>;
+  const sign = v > 0 ? '+' : '';
+  const cls = v > 0 ? 'text-green-500' : 'text-red-500';
+  return <span className={cls}>{sign}{v}</span>;
 }
-function isPickTableRow(x: unknown): x is PickTableRow {
-  return (
-    isRecord(x) &&
-    typeof x.id === 'number' &&
-    typeof x.season_year === 'number' &&
-    typeof x.week_number === 'number' &&
-    typeof x.pick_number === 'number' &&
-    typeof x.team_short === 'string' &&
-    typeof x.home_short === 'string' &&
-    typeof x.away_short === 'string'
-  );
+function ResultPill({ colour, text }: { colour: string; text: string }) {
+  const map: Record<string,string> = { green:'text-green-500', red:'text-red-500', orange:'text-orange-400', grey:'text-gray-400' };
+  return <span className={map[colour] ?? 'text-gray-400'}>{text}</span>;
 }
-function isOuTableRow(x: unknown): x is OuTableRow {
-  return (
-    isRecord(x) &&
-    typeof x.id === 'number' &&
-    typeof x.season_year === 'number' &&
-    typeof x.week_number === 'number' &&
-    typeof x.home_short === 'string' &&
-    typeof x.away_short === 'string' &&
-    (x.pick_side === 'OVER' || x.pick_side === 'UNDER')
-  );
-}
-
-/* 3-player snake, 9 ATS picks */
-const snakeOrder: string[] = [
-  PLAYERS[0], PLAYERS[1], PLAYERS[2],
-  PLAYERS[2], PLAYERS[1], PLAYERS[0],
-  PLAYERS[0], PLAYERS[1], PLAYERS[2],
-];
-
-/* ------------------------------ page ----------------------------- */
 
 export default function DraftPage() {
-  const [week, setWeek] = useState<number>(2);
-  const [board, setBoard] = useState<BoardRow[]>([]);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  const [week, setWeek] = useState<number>(2); // default to Week 2 now
+  const [weeks, setWeeks] = useState<number[]>([]);
+
+  const [turn, setTurn] = useState<TurnRow | null>(null);
+  const [games, setGames] = useState<GameRow[]>([]);
   const [picks, setPicks] = useState<PickRow[]>([]);
-  const [ouPicks, setOuPicks] = useState<OuPickRow[]>([]);
-  const [making, setMaking] = useState(false);
+  const [ouPicks, setOUPicks] = useState<OUPick[]>([]);
+  const [totals, setTotals] = useState<TotalsRow[]>([]);
 
-  const onScreenPairsRef = useRef<Set<string>>(new Set());
+  const myTurn = useMemo(() => !!turn && userEmail?.toLowerCase() === turn.email?.toLowerCase(), [turn, userEmail]);
 
-  const nextPickNumber = useMemo(() => {
-    const taken = new Set(picks.map(p => p.pick_number));
-    for (let i = 1; i <= 9; i++) if (!taken.has(i)) return i;
-    return null;
-  }, [picks]);
-
-  const currentPlayer: string | null = useMemo(() => {
-    if (nextPickNumber == null) return null;
-    return snakeOrder[nextPickNumber - 1] ?? null;
-  }, [nextPickNumber]);
-
-  const availablePairs = useMemo(() => {
-    const pickedPairs = new Set(picks.map(p => `${p.home_short}-${p.away_short}`));
-    return new Set(board.map(b => `${b.home}-${b.away}`).filter(k => !pickedPairs.has(k)));
-  }, [board, picks]);
-
-  async function loadAll(w: number) {
-    // 1) Board (lines)
-    const { data: b } = await supabase.rpc('get_week_draft_board', { p_year: YEAR, p_week: w });
-    const rows = (Array.isArray(b) ? (b as DraftBoardRpcRow[]) : []);
-    const boardRows: BoardRow[] = rows.map((r) => ({
-      home: String(r.home ?? ''),
-      away: String(r.away ?? ''),
-      spread: r.spread == null ? null : Number(r.spread),
-      total: r.total == null ? null : Number(r.total),
-    }));
-    setBoard(boardRows);
-    onScreenPairsRef.current = new Set(boardRows.map(r => `${r.home}-${r.away}`));
-
-    // 2) Picks so far
-    const { data: sp } = await supabase
-      .from('v_pick_results')
-      .select('id,season_year,week_number,pick_number,player_display_name,player_name,team_short,home_short,away_short,spread_at_pick')
-      .eq('season_year', YEAR)
-      .eq('week_number', w)
-      .order('pick_number', { ascending: true });
-
-    const spRows: unknown[] = Array.isArray(sp) ? sp : [];
-    setPicks(
-      spRows.filter(isPickTableRow).map((r): PickRow => ({
-        id: r.id,
-        season_year: r.season_year,
-        week_number: r.week_number,
-        pick_number: r.pick_number,
-        player_display_name: (r.player_display_name ?? r.player_name ?? '') || '',
-        team_short: r.team_short,
-        home_short: r.home_short,
-        away_short: r.away_short,
-        spread_at_pick: r.spread_at_pick,
-      }))
-    );
-
-    // 3) O/U so far
-    const { data: ou } = await supabase
-      .from('v_ou_results')
-      .select('id,season_year,week_number,player_display_name,player_name,home_short,away_short,pick_side,total_at_pick')
-      .eq('season_year', YEAR)
-      .eq('week_number', w);
-
-    const ouRows: unknown[] = Array.isArray(ou) ? ou : [];
-    setOuPicks(
-      ouRows.filter(isOuTableRow).map((r): OuPickRow => ({
-        id: r.id,
-        season_year: r.season_year,
-        week_number: r.week_number,
-        player_display_name: (r.player_display_name ?? r.player_name ?? '') || '',
-        home_short: r.home_short,
-        away_short: r.away_short,
-        pick_side: r.pick_side,
-        total_at_pick: r.total_at_pick,
-      }))
-    );
+  async function loadWeeks() {
+    const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
+    if (data) setWeeks((data as WeekOption[]).map(w => w.week_number));
+    else setWeeks(Array.from({length:18}, (_,i)=>i+1));
   }
 
-  useEffect(() => { loadAll(week); }, [week]);
+  async function loadAll() {
+    const sess = await supabase.auth.getSession();
+    setUserEmail(sess.data.session?.user.email ?? null);
 
-  // realtime: picks + O/U with safe guards
+    const [gRes, sRes, oRes, tRes] = await Promise.all([
+      supabase.rpc('get_week_games_with_status', { p_year: YEAR, p_week: week }),
+      supabase.rpc('get_week_spread_picks_v2',   { p_year: YEAR, p_week: week }),
+      supabase.rpc('get_week_ou_picks_v2',       { p_year: YEAR, p_week: week }),
+      supabase.rpc('get_current_turn',           { p_year: YEAR, p_week: week }),
+    ]);
+
+    setGames((gRes.data as GameRow[]) ?? []);
+    setPicks((sRes.data as PickRow[]) ?? []);
+    setOUPicks((oRes.data as OUPick[]) ?? []);
+    setTurn(((tRes.data as TurnRow[] | null)?.[0]) ?? null);
+
+    const tots = await supabase.rpc('get_week_totals', { p_year: YEAR, p_week: week });
+    if (!tots.error) setTotals((tots.data as TotalsRow[]) ?? []);
+  }
+
+  useEffect(() => { loadWeeks(); }, []);
+  useEffect(() => { loadAll(); }, [week]);
+
   useEffect(() => {
-    const ch = supabase
-      .channel('draft-live')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'picks' },
-        (payload: RealtimePostgresChangesPayload<PickTableRow>) => {
-          const rowUnknown = payload.new as unknown;
-          if (!isPickTableRow(rowUnknown)) return;
-          if (rowUnknown.season_year !== YEAR || rowUnknown.week_number !== week) return;
-
-          const mapped: PickRow = {
-            id: rowUnknown.id,
-            season_year: rowUnknown.season_year,
-            week_number: rowUnknown.week_number,
-            pick_number: rowUnknown.pick_number,
-            player_display_name: (rowUnknown.player_display_name ?? rowUnknown.player_name ?? '') || '',
-            team_short: rowUnknown.team_short,
-            home_short: rowUnknown.home_short,
-            away_short: rowUnknown.away_short,
-            spread_at_pick: rowUnknown.spread_at_pick,
-          };
-
-          setPicks(prev => {
-            const existing = prev.find(p => p.id === mapped.id);
-            if (existing) return prev.map(p => (p.id === mapped.id ? mapped : p));
-            return [...prev, mapped].sort((a, b) => a.pick_number - b.pick_number);
-          });
-        }
-      )
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'ou_picks' },
-        (payload: RealtimePostgresChangesPayload<OuTableRow>) => {
-          const rowUnknown = payload.new as unknown;
-          if (!isOuTableRow(rowUnknown)) return;
-          if (rowUnknown.season_year !== YEAR || rowUnknown.week_number !== week) return;
-
-          const mapped: OuPickRow = {
-            id: rowUnknown.id,
-            season_year: rowUnknown.season_year,
-            week_number: rowUnknown.week_number,
-            player_display_name: (rowUnknown.player_display_name ?? rowUnknown.player_name ?? '') || '',
-            home_short: rowUnknown.home_short,
-            away_short: rowUnknown.away_short,
-            pick_side: rowUnknown.pick_side,
-            total_at_pick: rowUnknown.total_at_pick,
-          };
-
-          setOuPicks(prev => {
-            const existing = prev.find(p => p.id === mapped.id);
-            if (existing) return prev.map(p => (p.id === mapped.id ? mapped : p));
-            return [...prev, mapped];
-          });
-        }
-      )
-      .subscribe();
-
-    return () => { supabase.removeChannel(ch); };
+    const ch1 = supabase.channel('picks').on('postgres_changes', { event:'*', schema:'public', table:'picks' }, loadAll).subscribe();
+    const ch2 = supabase.channel('drafts').on('postgres_changes', { event:'*', schema:'public', table:'drafts' }, loadAll).subscribe();
+    return () => { supabase.removeChannel(ch1); supabase.removeChannel(ch2); };
   }, [week]);
 
-  async function makeSpreadPick(team: string) {
-    if (!currentPlayer || nextPickNumber == null) return;
-    setMaking(true);
-    try {
-      const { error } = await supabase.rpc('make_spread_pick', {
-        p_year: YEAR,
-        p_week: week,
-        p_pick_number: nextPickNumber,
-        p_player: currentPlayer,
-        p_team_short: team,
-      });
-      if (error) alert(error.message);
-    } finally {
-      setMaking(false);
+  async function pick(home: string, away: string, team: string) {
+    if (!userEmail) { alert('Please log in'); return; }
+    const { data, error } = await supabase.rpc('make_pick_by_teams', {
+      p_player_email: userEmail, p_year: YEAR, p_week_number: week,
+      p_home_short: home, p_away_short: away, p_pick_short: team
+    });
+    if (error) alert(error.message);
+    else {
+      const res = (data as MakePickResult[] | null)?.[0];
+      if (res && res.ok === false) alert(res.message ?? 'Pick not allowed');
     }
+    await loadAll();
   }
 
-  async function makeOuPick(choice: 'OVER' | 'UNDER', pair: { home: string; away: string }) {
-    if (!currentPlayer) return;
-    setMaking(true);
-    try {
-      const { error } = await supabase.rpc('make_ou_pick', {
-        p_year: YEAR,
-        p_week: week,
-        p_player: currentPlayer,
-        p_home_short: pair.home,
-        p_away_short: pair.away,
-        p_choice: choice,
-      });
-      if (error) alert(error.message);
-    } finally {
-      setMaking(false);
+  async function submitOU(home: string, away: string, side: 'over'|'under') {
+    if (!userEmail) { alert('Please log in'); return; }
+    const { data, error } = await supabase.rpc('make_ou_pick_by_teams', {
+      p_player_email: userEmail, p_year: YEAR, p_week_number: week,
+      p_home_short: home, p_away_short: away, p_pick_side: side
+    });
+    if (error) alert(error.message);
+    else {
+      const res = (data as MakeOUPickResult[] | null)?.[0];
+      if (res && res.ok === false) alert(res.message ?? 'O/U not allowed');
     }
+    await loadAll();
   }
 
-  const playerHasOu = useMemo(() => new Set(ouPicks.map(o => o.player_display_name)), [ouPicks]);
-
-  const atsLeft: Record<string, number> = {
-    'Big Dawg': 3 - picks.filter(p => p.player_display_name === 'Big Dawg').length,
-    'Pud': 3 - picks.filter(p => p.player_display_name === 'Pud').length,
-    'Kinish': 3 - picks.filter(p => p.player_display_name === 'Kinish').length,
-  };
+  const [ouSel, setOuSel] = useState<string>('');
+  const [ouSide, setOuSide] = useState<'over'|'under'>('over');
 
   return (
-    <div className="max-w-6xl mx-auto p-6 space-y-8">
-      <header className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Draft Board</h1>
-        <div className="flex items-center gap-2">
-          <label className="text-sm opacity-70">Week</label>
-          <select
-            className="border rounded p-1 bg-transparent"
-            value={week}
-            onChange={e => setWeek(parseInt(e.target.value, 10))}
-          >
-            {Array.from({ length: 18 }, (_, i) => i + 1).map(w => (
-              <option key={w} value={w}>Week {w}</option>
-            ))}
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <header className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl font-semibold">Draft</h1>
+          <select className="border rounded p-1 bg-transparent" value={week} onChange={(e)=>setWeek(parseInt(e.target.value,10))}>
+            {weeks.map(w => <option key={w} value={w}>Week {w}</option>)}
           </select>
+        </div>
+        <div className="text-sm">
+          <Link className="underline" href="/">Scoreboard</Link>
+          {' '}• <Link className="underline" href="/admin">Admin</Link>
         </div>
       </header>
 
-      {/* Board */}
-      <section className="space-y-2">
-        <p className="text-sm text-zinc-400">
-          Showing <em>current market</em> numbers from <code>game_lines</code>. Picks store the line at pick-time.
-        </p>
-        <div className="border rounded overflow-hidden">
-          <div className="grid grid-cols-12 px-3 py-2 bg-zinc-900/50 text-sm font-medium">
-            <div className="col-span-10">Game</div>
-            <div className="col-span-1 text-right">Spread</div>
-            <div className="col-span-1 text-right">Total</div>
-          </div>
-          {board.map((r) => (
-            <div key={`${r.home}-${r.away}`} className="grid grid-cols-12 px-3 py-2 border-t border-zinc-800 text-sm">
-              <div className="col-span-10 flex items-center gap-2">
-                <TinyLogo s={r.home} />
-                <span className="w-10">{r.home}</span>
-                <span className="opacity-50">v</span>
-                <TinyLogo s={r.away} />
-                <span className="w-10">{r.away}</span>
+      {turn && (
+        <div className="p-3 rounded border">
+          Current pick #{turn.pick_number}: <b>{turn.display_name}</b>{myTurn ? ' — your turn' : ''}
+        </div>
+      )}
+
+      {/* Games list */}
+      <section className="space-y-3">
+        {games.map(g => {
+          const bothTaken = g.home_taken && g.away_taken;
+          if (bothTaken) return null;
+          return (
+            <div key={g.game_id} className="grid grid-cols-3 gap-3 items-center p-3 rounded border">
+              <div className="flex gap-2 items-center">
+                {g.home_logo_url && <img src={g.home_logo_url} alt={g.home} className="h-6 w-6 object-contain" />}
+                <span className={g.home_taken ? 'line-through text-gray-500' : ''}>{g.home}</span>
+                <Spread v={g.home_spread} />
               </div>
-              <div className="col-span-1 text-right">{signed(r.spread)}</div>
-              <div className="col-span-1 text-right">{r.total ?? '—'}</div>
+              <div className="text-center">v</div>
+              <div className="flex gap-2 items-center justify-end">
+                <Spread v={g.away_spread} />
+                <span className={g.away_taken ? 'line-through text-gray-500' : ''}>{g.away}</span>
+                {g.away_logo_url && <img src={g.away_logo_url} alt={g.away} className="h-6 w-6 object-contain" />}
+              </div>
+              <div className="col-span-3 flex justify-end gap-2">
+                <button disabled={!myTurn || g.home_taken} onClick={()=>pick(g.home,g.away,g.home)} className="px-3 py-1 border rounded disabled:opacity-50">Pick {g.home}</button>
+                <button disabled={!myTurn || g.away_taken} onClick={()=>pick(g.home,g.away,g.away)} className="px-3 py-1 border rounded disabled:opacity-50">Pick {g.away}</button>
+              </div>
+            </div>
+          );
+        })}
+      </section>
+
+      {/* Current picks */}
+      <section>
+        <h2 className="text-xl font-semibold mb-2">Picks</h2>
+        <div className="space-y-1">
+          {picks.map(p => (
+            <div key={`${p.pick_number}-${p.picker}-${p.picked_team}-${p.created_at}`} className="grid grid-cols-7 gap-2 text-sm p-2 border rounded items-center">
+              <div>#{p.pick_number}</div>
+              <div>{p.picker}</div>
+              <div className="flex items-center gap-2">
+                {p.picked_logo_url && <img src={p.picked_logo_url} alt={p.picked_team} className="h-5 w-5 object-contain" />}
+                <span>{p.picked_team}</span>
+              </div>
+              <div className="col-span-2">{p.matchup}</div>
+              <div>{formatSigned(p.spread_at_pick)}</div>
+              <div><ResultPill colour={p.colour} text={p.result} /></div>
             </div>
           ))}
         </div>
       </section>
 
-      {/* Interactive draft */}
-      <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Live Draft</h2>
-          <div className="text-sm">
-            {PLAYERS.map(name => (
-              <span key={name} className={`ml-4 ${currentPlayer === name ? 'font-semibold' : ''}`}>
-                {name} ({Math.max(0, atsLeft[name] ?? 0)} left)
-              </span>
-            ))}
+      {/* O/U form */}
+      {userEmail && totals.length > 0 && (
+        <section className="p-3 border rounded space-y-2">
+          <div className="font-semibold">O/U Tie-breaker</div>
+          <div className="flex gap-2 items-center">
+            <select className="border rounded p-1 bg-transparent" value={ouSel} onChange={(e)=>setOuSel(e.target.value)}>
+              <option value="">Select a game…</option>
+              {totals.map(g => <option key={g.game_id} value={`${g.home}|${g.away}`}>{g.home} v {g.away} — {g.total_line}</option>)}
+            </select>
+            <select className="border rounded p-1 bg-transparent" value={ouSide} onChange={(e)=>setOuSide(e.target.value as 'over'|'under')}>
+              <option value="over">OVER</option>
+              <option value="under">UNDER</option>
+            </select>
+            <button
+              className="px-3 py-1 border rounded disabled:opacity-50"
+              disabled={!ouSel}
+              onClick={async ()=>{
+                const [home,away] = ouSel.split('|');
+                await submitOU(home, away, ouSide);
+                setOuSel('');
+              }}
+            >
+              Submit O/U
+            </button>
           </div>
-        </div>
-
-        {/* Picks so far */}
-        <div className="border rounded">
-          <div className="px-3 py-2 bg-zinc-900/50 text-sm font-medium">Picks</div>
-          {picks.length === 0 ? (
-            <div className="px-3 py-3 text-sm text-zinc-400">No picks yet.</div>
-          ) : (
-            <div className="divide-y divide-zinc-800">
-              {picks.map(p => (
-                <div key={p.id} className="px-3 py-2 text-sm flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <span className="w-5 text-right mr-2 opacity-60">{p.pick_number}.</span>
-                    <span className="w-24">{p.player_display_name}</span>
-                    <TinyLogo s={p.team_short} />
-                    <span className="w-8 font-semibold">{p.team_short}</span>
-                    <span className="opacity-60">({matchup(p.home_short, p.away_short)})</span>
-                  </div>
-                  <div className="tabular-nums">{signed(p.spread_at_pick)}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* On the clock + buttons */}
-        {nextPickNumber !== null && nextPickNumber <= 9 ? (
-          <div className="border rounded p-3">
-            <div className="mb-3">
-              <span className="text-sm opacity-70 mr-2">On the clock:</span>
-              <span className="font-semibold">{currentPlayer}</span>
-              <span className="ml-3 text-sm opacity-70">Pick #{nextPickNumber}</span>
-            </div>
-
-            <div className="grid md:grid-cols-2 gap-2">
-              {board.map((g) => {
-                const key = `${g.home}-${g.away}`;
-                const taken = !availablePairs.has(key);
-                return (
-                  <div key={key} className={`border rounded p-2 ${taken ? 'opacity-40' : ''}`}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <TinyLogo s={g.home} /><span className="w-8">{g.home}</span>
-                        <span className="opacity-50">v</span>
-                        <TinyLogo s={g.away} /><span className="w-8">{g.away}</span>
-                      </div>
-                      <div className="text-sm opacity-70">({signed(g.spread)} / {g.total ?? '—'})</div>
-                    </div>
-                    <div className="mt-2 flex gap-2">
-                      <button
-                        className="px-2 py-1 border rounded hover:bg-zinc-800 disabled:opacity-50"
-                        disabled={taken || making}
-                        onClick={() => makeSpreadPick(g.home)}
-                      >
-                        Pick {g.home}
-                      </button>
-                      <button
-                        className="px-2 py-1 border rounded hover:bg-zinc-800 disabled:opacity-50"
-                        disabled={taken || making}
-                        onClick={() => makeSpreadPick(g.away)}
-                      >
-                        Pick {g.away}
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ) : (
-          <div className="border rounded p-3">
-            <div className="mb-3 font-medium">ATS complete — O/U tie-breakers</div>
-            {(['Big Dawg','Pud','Kinish'] as string[]).map(name => {
-              const already = playerHasOu.has(name);
-              const nextOu = (['Big Dawg','Pud','Kinish'] as string[]).find(n => !playerHasOu.has(n)) ?? null;
-              const meOnClock = !already && name === nextOu;
-
-              return (
-                <div key={name} className={`flex items-center justify-between py-2 border-t border-zinc-800 ${meOnClock ? 'bg-zinc-900/50' : ''}`}>
-                  <div className="px-3">{name}</div>
-                  <div className="flex items-center gap-2 px-3">
-                    {already ? (
-                      <span className="text-sm opacity-70">done</span>
-                    ) : (
-                      board.map(g => (
-                        <div key={`${name}-${g.home}-${g.away}`} className="flex items-center gap-2">
-                          <span className="text-sm opacity-70">{matchup(g.home, g.away)}</span>
-                          <button
-                            className="px-2 py-1 border rounded hover:bg-zinc-800 disabled:opacity-50"
-                            disabled={making}
-                            onClick={() => makeOuPick('OVER', { home: g.home, away: g.away })}
-                          >OVER</button>
-                          <button
-                            className="px-2 py-1 border rounded hover:bg-zinc-800 disabled:opacity-50"
-                            disabled={making}
-                            onClick={() => makeOuPick('UNDER', { home: g.home, away: g.away })}
-                          >UNDER</button>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+        </section>
+      )}
     </div>
   );
 }
