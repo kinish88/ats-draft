@@ -60,6 +60,11 @@ type OuPickPublic = {
 type Outcome = 'win' | 'loss' | 'push' | 'pending';
 
 // ---------- utils ----------
+
+function hasId(obj: unknown): obj is { id: number } {
+  return !!obj && typeof (obj as { id?: unknown }).id === 'number';
+}
+
 function parseMatchup(m: string): { home: string; away: string } | null {
   const parts = m.split(' v ');
   if (parts.length !== 2) return null;
@@ -209,22 +214,31 @@ export default function ScoreboardPage() {
 
   // ---- realtime: update any games in our current list
   useEffect(() => {
-    if (!games.length) return;
-    const idSet = new Set(games.map(g => g.id));
-    const chan = supabase
-      .channel('scoreboard-games')
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'games' },
-        (payload: RealtimePostgresChangesPayload<GameRow>) => {
-          const row = payload.new;
-          if (!row || typeof row.id !== 'number' || !idSet.has(row.id)) return;
-          setGames(prev => prev.map(g => (g.id === row.id ? { ...g, ...row } : g)));
-        }
-      )
-      .subscribe();
-    return () => { supabase.removeChannel(chan); };
-  }, [games]);
+  if (!games.length) return;
+
+  const idSet = new Set(games.map(g => g.id));
+
+  const chan = supabase
+    .channel('scoreboard-games')
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'games' },
+      (payload: RealtimePostgresChangesPayload<Partial<GameRow>>) => {
+        const row = payload.new;
+        if (!hasId(row) || !idSet.has(row.id)) return;
+
+        setGames(prev =>
+          prev.map(g => (g.id === row.id ? { ...g, ...(row as Partial<GameRow>) } : g))
+        );
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(chan);
+  };
+}, [games]);
+
 
   // ---- derived
   const gameByPair = useMemo(() => {
