@@ -10,8 +10,21 @@ const LOGO_BASE = (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/,
 
 /* ----------------------------- types ----------------------------- */
 
-type BoardRow = { home: string; away: string; spread: number | null; total: number | null };
-type DraftBoardRpcRow = { home_short?: unknown; away_short?: unknown; spread?: unknown; total?: unknown };
+type BoardRow = {
+  home: string;
+  away: string;
+  fav: string | null;          // <— favourite short name
+  spread: number | null;
+  total: number | null;
+};
+
+type DraftBoardRpcRow = {
+  home_short?: unknown;
+  away_short?: unknown;
+  fav_short?: unknown;         // <— favourite from RPC
+  spread?: unknown;
+  total?: unknown;
+};
 
 type PickRow = {
   id: number;
@@ -71,6 +84,9 @@ function TinyLogo({ s }: { s: string }) {
   const url = teamLogo(s);
   return url ? <img src={url} alt={s} className="w-5 h-5 rounded-sm" /> : <span className="w-5 h-5" />;
 }
+function FavStar() {
+  return <span className="ml-1 text-amber-400" title="Favourite">★</span>;
+}
 function matchup(h: string, a: string) {
   return `${h} v ${a}`;
 }
@@ -106,16 +122,15 @@ function isOuTableRow(x: unknown): x is OuTableRow {
   );
 }
 
-/** Rotate players by week so Week1 starts at index 0, Week2 at 1, Week3 at 2, then repeat. */
+/** Week-based rotation so Week 1 starts at index 0, Week 2 at 1, etc. */
 function rotatedPlayersByWeek(players: readonly string[], week: number): string[] {
   const offset = ((Math.max(1, week) - 1) % players.length);
   return [...players.slice(offset), ...players.slice(0, offset)];
 }
 
-/** Build 3-player snake order for 9 picks, starting from week-based rotation. */
+/** 3-player snake for 9 picks, starting from week rotation. */
 function snakeOrderForWeek(week: number): string[] {
   const r = rotatedPlayersByWeek(PLAYERS as readonly string[], week);
-  // forward, reverse, forward
   return [r[0], r[1], r[2], r[2], r[1], r[0], r[0], r[1], r[2]];
 }
 
@@ -127,8 +142,6 @@ export default function DraftPage() {
   const [picks, setPicks] = useState<PickRow[]>([]);
   const [ouPicks, setOuPicks] = useState<OuPickRow[]>([]);
   const [making, setMaking] = useState(false);
-
-  const onScreenPairsRef = useRef<Set<string>>(new Set());
 
   const snakeOrder = useMemo(() => snakeOrderForWeek(week), [week]);
 
@@ -144,24 +157,24 @@ export default function DraftPage() {
   }, [nextPickNumber, snakeOrder]);
 
   const availablePairs = useMemo(() => {
-    const pickedPairs = new Set(picks.map(p => `${p.home_short}-${p.away_short}`));
-    return new Set(board.map(b => `${b.home}-${b.away}`).filter(k => !pickedPairs.has(k)));
+    const picked = new Set(picks.map(p => `${p.home_short}-${p.away_short}`));
+    return new Set(board.map(b => `${b.home}-${b.away}`).filter(k => !picked.has(k)));
   }, [board, picks]);
 
   async function loadAll(w: number) {
-    // 1) Board (lines) — correct fields: home_short / away_short
+    // Board / lines with favourite
     const { data: b } = await supabase.rpc('get_week_draft_board', { p_year: YEAR, p_week: w });
     const rows = (Array.isArray(b) ? (b as DraftBoardRpcRow[]) : []);
     const boardRows: BoardRow[] = rows.map((r) => ({
       home: String(r.home_short ?? ''),
       away: String(r.away_short ?? ''),
+      fav: typeof r.fav_short === 'string' ? r.fav_short : null,     // <— grab favourite
       spread: r.spread == null ? null : Number(r.spread),
       total: r.total == null ? null : Number(r.total),
     }));
     setBoard(boardRows);
-    onScreenPairsRef.current = new Set(boardRows.map(r => `${r.home}-${r.away}`));
 
-    // 2) Picks so far
+    // Picks so far
     const { data: sp } = await supabase
       .from('v_pick_results')
       .select('id,season_year,week_number,pick_number,player_display_name,player_name,team_short,home_short,away_short,spread_at_pick')
@@ -184,7 +197,7 @@ export default function DraftPage() {
       }))
     );
 
-    // 3) O/U so far
+    // O/U so far
     const { data: ou } = await supabase
       .from('v_ou_results')
       .select('id,season_year,week_number,player_display_name,player_name,home_short,away_short,pick_side,total_at_pick')
@@ -208,7 +221,7 @@ export default function DraftPage() {
 
   useEffect(() => { loadAll(week); }, [week]);
 
-  // realtime: picks + O/U with safe guards
+  // realtime (picks + O/U)
   useEffect(() => {
     const ch = supabase
       .channel('draft-live')
@@ -216,25 +229,25 @@ export default function DraftPage() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'picks' },
         (payload: RealtimePostgresChangesPayload<PickTableRow>) => {
-          const rowUnknown = payload.new as unknown;
-          if (!isPickTableRow(rowUnknown)) return;
-          if (rowUnknown.season_year !== YEAR || rowUnknown.week_number !== week) return;
+          const row = payload.new as unknown;
+          if (!isPickTableRow(row)) return;
+          if (row.season_year !== YEAR || row.week_number !== week) return;
 
           const mapped: PickRow = {
-            id: rowUnknown.id,
-            season_year: rowUnknown.season_year,
-            week_number: rowUnknown.week_number,
-            pick_number: rowUnknown.pick_number,
-            player_display_name: (rowUnknown.player_display_name ?? rowUnknown.player_name ?? '') || '',
-            team_short: rowUnknown.team_short,
-            home_short: rowUnknown.home_short,
-            away_short: rowUnknown.away_short,
-            spread_at_pick: rowUnknown.spread_at_pick,
+            id: row.id,
+            season_year: row.season_year,
+            week_number: row.week_number,
+            pick_number: row.pick_number,
+            player_display_name: (row.player_display_name ?? row.player_name ?? '') || '',
+            team_short: row.team_short,
+            home_short: row.home_short,
+            away_short: row.away_short,
+            spread_at_pick: row.spread_at_pick,
           };
 
           setPicks(prev => {
-            const existing = prev.find(p => p.id === mapped.id);
-            if (existing) return prev.map(p => (p.id === mapped.id ? mapped : p));
+            const exists = prev.find(p => p.id === mapped.id);
+            if (exists) return prev.map(p => (p.id === mapped.id ? mapped : p));
             return [...prev, mapped].sort((a, b) => a.pick_number - b.pick_number);
           });
         }
@@ -243,24 +256,24 @@ export default function DraftPage() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'ou_picks' },
         (payload: RealtimePostgresChangesPayload<OuTableRow>) => {
-          const rowUnknown = payload.new as unknown;
-          if (!isOuTableRow(rowUnknown)) return;
-          if (rowUnknown.season_year !== YEAR || rowUnknown.week_number !== week) return;
+          const row = payload.new as unknown;
+          if (!isOuTableRow(row)) return;
+          if (row.season_year !== YEAR || row.week_number !== week) return;
 
           const mapped: OuPickRow = {
-            id: rowUnknown.id,
-            season_year: rowUnknown.season_year,
-            week_number: rowUnknown.week_number,
-            player_display_name: (rowUnknown.player_display_name ?? rowUnknown.player_name ?? '') || '',
-            home_short: rowUnknown.home_short,
-            away_short: rowUnknown.away_short,
-            pick_side: rowUnknown.pick_side,
-            total_at_pick: rowUnknown.total_at_pick,
+            id: row.id,
+            season_year: row.season_year,
+            week_number: row.week_number,
+            player_display_name: (row.player_display_name ?? row.player_name ?? '') || '',
+            home_short: row.home_short,
+            away_short: row.away_short,
+            pick_side: row.pick_side,
+            total_at_pick: row.total_at_pick,
           };
 
           setOuPicks(prev => {
-            const existing = prev.find(p => p.id === mapped.id);
-            if (existing) return prev.map(p => (p.id === mapped.id ? mapped : p));
+            const exists = prev.find(p => p.id === mapped.id);
+            if (exists) return prev.map(p => (p.id === mapped.id ? mapped : p));
             return [...prev, mapped];
           });
         }
@@ -271,14 +284,21 @@ export default function DraftPage() {
   }, [week]);
 
   async function makeSpreadPick(team: string) {
-    if (!currentPlayer || nextPickNumber == null) return;
+    const pickNum = (() => {
+      const taken = new Set(picks.map(p => p.pick_number));
+      for (let i = 1; i <= 9; i++) if (!taken.has(i)) return i;
+      return null;
+    })();
+    const player = pickNum ? snakeOrder[pickNum - 1] : null;
+    if (!pickNum || !player) return;
+
     setMaking(true);
     try {
       const { error } = await supabase.rpc('make_spread_pick', {
         p_year: YEAR,
         p_week: week,
-        p_pick_number: nextPickNumber,
-        p_player: currentPlayer,
+        p_pick_number: pickNum,
+        p_player: player,
         p_team_short: team,
       });
       if (error) alert(error.message);
@@ -288,13 +308,15 @@ export default function DraftPage() {
   }
 
   async function makeOuPick(choice: 'OVER' | 'UNDER', pair: { home: string; away: string }) {
-    if (!currentPlayer) return;
+    const nextOu = (['Big Dawg','Pud','Kinish'] as string[]).find(n => !new Set(ouPicks.map(o => o.player_display_name)).has(n)) ?? null;
+    if (!nextOu) return;
+
     setMaking(true);
     try {
       const { error } = await supabase.rpc('make_ou_pick', {
         p_year: YEAR,
         p_week: week,
-        p_player: currentPlayer,
+        p_player: nextOu,
         p_home_short: pair.home,
         p_away_short: pair.away,
         p_choice: choice,
@@ -346,10 +368,14 @@ export default function DraftPage() {
             <div key={`${r.home}-${r.away}`} className="grid grid-cols-12 px-3 py-2 border-t border-zinc-800 text-sm">
               <div className="col-span-10 flex items-center gap-2">
                 <TinyLogo s={r.home} />
-                <span className="w-10">{r.home}</span>
+                <span className={`w-10 ${r.fav === r.home ? 'font-semibold' : ''}`}>
+                  {r.home}{r.fav === r.home && <FavStar />}
+                </span>
                 <span className="opacity-50">v</span>
                 <TinyLogo s={r.away} />
-                <span className="w-10">{r.away}</span>
+                <span className={`w-10 ${r.fav === r.away ? 'font-semibold' : ''}`}>
+                  {r.away}{r.fav === r.away && <FavStar />}
+                </span>
               </div>
               <div className="col-span-1 text-right">{signed(r.spread)}</div>
               <div className="col-span-1 text-right">{r.total ?? '—'}</div>
@@ -411,9 +437,15 @@ export default function DraftPage() {
                   <div key={key} className={`border rounded p-2 ${taken ? 'opacity-40' : ''}`}>
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <TinyLogo s={g.home} /><span className="w-8">{g.home}</span>
+                        <TinyLogo s={g.home} />
+                        <span className={`w-8 ${g.fav === g.home ? 'font-semibold' : ''}`}>
+                          {g.home}{g.fav === g.home && <FavStar />}
+                        </span>
                         <span className="opacity-50">v</span>
-                        <TinyLogo s={g.away} /><span className="w-8">{g.away}</span>
+                        <TinyLogo s={g.away} />
+                        <span className={`w-8 ${g.fav === g.away ? 'font-semibold' : ''}`}>
+                          {g.away}{g.fav === g.away && <FavStar />}
+                        </span>
                       </div>
                       <div className="text-sm opacity-70">({signed(g.spread)} / {g.total ?? '—'})</div>
                     </div>
@@ -455,7 +487,9 @@ export default function DraftPage() {
                     ) : (
                       board.map(g => (
                         <div key={`${name}-${g.home}-${g.away}`} className="flex items-center gap-2">
-                          <span className="text-sm opacity-70">{matchup(g.home, g.away)}</span>
+                          <span className="text-sm opacity-70">
+                            {matchup(g.home, g.away)}{g.fav ? ` — fav ${g.fav}` : ''}
+                          </span>
                           <button
                             className="px-2 py-1 border rounded hover:bg-zinc-800 disabled:opacity-50"
                             disabled={making}
