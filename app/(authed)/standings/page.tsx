@@ -5,129 +5,141 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 
 const YEAR = 2025;
+const PLAYERS = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
 type WeekRow = { week_number: number };
+
 type WeekSummaryRow = {
   display_name: string;
   spread_wins: number;
   spread_losses: number;
   spread_pushes: number;
-  ou_result: string | null;
-  is_gold_winner: boolean | null;
-  is_ou_winner: boolean | null;
+  ou_result: 'win' | 'loss' | 'push' | null;
 };
 
 type Totals = {
-  player: string;
   weekWins: number;
-  atsW: number;
-  atsL: number;
-  atsP: number;
+  w: number;
+  l: number;
+  p: number;
 };
 
-export default function SeasonStandingsPage() {
-  const [rows, setRows] = useState<Totals[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const load = async () => {
-      setLoading(true);
-
-      // which weeks exist?
-      const { data: weekList } = await supabase.rpc('list_weeks', { p_year: YEAR });
-      const weeks =
-        (Array.isArray(weekList) ? (weekList as WeekRow[]).map((w) => w.week_number) : []) || [1];
-
-      // fetch each week's summary
-      const results = await Promise.all(
-        weeks.map((w) => supabase.rpc('get_week_summary', { p_year: YEAR, p_week: w })),
-      );
-
-      // aggregate
-      const byPlayer = new Map<string, Totals>();
-      for (let i = 0; i < results.length; i++) {
-        const week = weeks[i];
-        const sum = (results[i].data as WeekSummaryRow[]) || [];
-
-        // weekly winner: most ATS wins, tie broken by is_ou_winner
-        if (sum.length) {
-          const top = Math.max(...sum.map(r => r.spread_wins));
-const cands = sum.filter(r => r.spread_wins === top);
-const winners = cands.some(r => r.is_ou_winner) ? cands.filter(r => r.is_ou_winner) : cands;
-const winnerNames = new Set(winners.map(w => w.display_name));
-
-for (const r of sum) {
-  const key = r.display_name;
-  const prev = byPlayer.get(key) || { player: key, weekWins: 0, atsW: 0, atsL: 0, atsP: 0 };
-  const next = {
-    player: key,
-    weekWins: prev.weekWins + (winnerNames.has(key) ? 1 : 0),
-    atsW: prev.atsW + (r.spread_wins || 0),
-    atsL: prev.atsL + (r.spread_losses || 0),
-    atsP: prev.atsP + (r.spread_pushes || 0),
-  };
-  byPlayer.set(key, next);
+function pct(w: number, l: number, p: number) {
+  const games = w + l + p;
+  if (!games) return '—';
+  return `${((w / games) * 100).toFixed(1)}%`;
 }
 
+export default function SeasonStandingsPage() {
+  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState<Array<{ player: string; weekWins: number; w: number; l: number; p: number }>>([]);
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+
+      // 1) Which weeks exist?
+      const { data: weeksRaw } = await supabase.rpc('list_weeks', { p_year: YEAR });
+      const weeks: number[] =
+        (Array.isArray(weeksRaw) ? weeksRaw : [])
+          .map((w: any) => (typeof w?.week_number === 'number' ? w.week_number : null))
+          .filter((n: number | null): n is number => n !== null) || [];
+
+      // seed totals for each player
+      const totals = new Map<string, Totals>();
+      for (const name of PLAYERS) totals.set(name, { weekWins: 0, w: 0, l: 0, p: 0 });
+
+      // 2) Roll through the season week-by-week
+      for (const w of weeks) {
+        const { data } = await supabase.rpc('get_week_summary', { p_year: YEAR, p_week: w });
+        const summary: WeekSummaryRow[] = (Array.isArray(data) ? data : []).map((r: any) => ({
+          display_name: String(r?.display_name ?? ''),
+          spread_wins: Number(r?.spread_wins ?? 0),
+          spread_losses: Number(r?.spread_losses ?? 0),
+          spread_pushes: Number(r?.spread_pushes ?? 0),
+          ou_result: r?.ou_result ?? null,
+        }));
+
+        // accumulate ATS tallies regardless of completeness
+        for (const r of summary) {
+          const t = totals.get(r.display_name);
+          if (!t) continue;
+          t.w += r.spread_wins;
+          t.l += r.spread_losses;
+          t.p += r.spread_pushes;
+        }
+
+        // award week wins only if every player has all 3 ATS results
+        const complete = summary.every(
+          (r) => r.spread_wins + r.spread_losses + r.spread_pushes === 3
+        );
+        if (!complete) continue;
+
+        // find ATS leaders
+        const maxW = Math.max(...summary.map((r) => r.spread_wins));
+        let contenders = summary.filter((r) => r.spread_wins === maxW);
+
+        if (contenders.length > 1) {
+          // break ties with O/U: prefer ou_result === 'win'
+          const ouWinners = contenders.filter((r) => r.ou_result === 'win');
+          if (ouWinners.length > 0) contenders = ouWinners;
+          // if still tied (or missing O/U), they all share the week win
+        }
+
+        for (const r of contenders) {
+          const t = totals.get(r.display_name);
+          if (t) t.weekWins += 1;
         }
       }
 
-      setRows(Array.from(byPlayer.values()).sort((a, b) => b.weekWins - a.weekWins));
-      setLoading(false);
-    };
+      // shape rows
+      const table = PLAYERS.map((name) => {
+        const t = totals.get(name)!;
+        return { player: name, ...t };
+      }).sort((a, b) => (b.weekWins - a.weekWins) || ((b.w / Math.max(1, b.w + b.l + b.p)) - (a.w / Math.max(1, a.w + a.l + a.p))));
 
-    load();
+      setRows(table);
+      setLoading(false);
+    })();
   }, []);
 
-  const withPct = useMemo(
-    () =>
-      rows.map((r) => {
-        const denom = r.atsW + r.atsL;
-        const pct = denom > 0 ? (r.atsW / denom) * 100 : 0;
-        return { ...r, pct: Math.round(pct * 10) / 10 };
-      }),
-    [rows],
-  );
-
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-4">
-      <div className="flex justify-between items-center">
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Season Standings</h1>
-        <Link href="/scoreboard" className="text-sm text-zinc-300 hover:underline">
-          ← Back
-        </Link>
+        <Link href="/"><span className="text-sm opacity-80 hover:opacity-100">← Back</span></Link>
       </div>
 
-      {loading ? (
-        <div className="text-sm text-zinc-400">Loading…</div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="text-left text-zinc-300">
-              <tr>
-                <th className="py-2 pr-3">Player</th>
-                <th className="py-2 px-3">Week Wins</th>
-                <th className="py-2 px-3">ATS W</th>
-                <th className="py-2 px-3">ATS L</th>
-                <th className="py-2 px-3">ATS P</th>
-                <th className="py-2 px-3">Win %</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-700/60">
-              {withPct.map((r) => (
-                <tr key={r.player}>
-                  <td className="py-2 pr-3 font-medium">{r.player}</td>
-                  <td className="py-2 px-3 tabular-nums">{r.weekWins}</td>
-                  <td className="py-2 px-3 tabular-nums">{r.atsW}</td>
-                  <td className="py-2 px-3 tabular-nums">{r.atsL}</td>
-                  <td className="py-2 px-3 tabular-nums">{r.atsP}</td>
-                  <td className="py-2 px-3 tabular-nums">{r.pct}%</td>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-left border-b border-zinc-700">
+            <tr>
+              <th className="py-2 pr-4">Player</th>
+              <th className="py-2 pr-4">Week Wins</th>
+              <th className="py-2 pr-4">ATS W</th>
+              <th className="py-2 pr-4">ATS L</th>
+              <th className="py-2 pr-4">ATS P</th>
+              <th className="py-2 pr-4">Win %</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td className="py-3 text-zinc-400" colSpan={6}>Loading…</td></tr>
+            ) : (
+              rows.map((r) => (
+                <tr key={r.player} className="border-b border-zinc-800">
+                  <td className="py-2 pr-4">{r.player}</td>
+                  <td className="py-2 pr-4">{r.weekWins}</td>
+                  <td className="py-2 pr-4">{r.w}</td>
+                  <td className="py-2 pr-4">{r.l}</td>
+                  <td className="py-2 pr-4">{r.p}</td>
+                  <td className="py-2 pr-4">{pct(r.w, r.l, r.p)}</td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
