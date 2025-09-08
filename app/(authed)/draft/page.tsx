@@ -9,11 +9,9 @@ import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 const YEAR = 2025;
 const PLAYERS: readonly string[] = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
-// fallback for “who am I?” if a profiles row isn’t found
 const DEFAULT_PLAYER =
   (process.env.NEXT_PUBLIC_DEFAULT_PLAYER_NAME || '').trim() || null;
 
-// team logos
 const LOGO_BASE =
   (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/, '') || null;
 
@@ -22,8 +20,8 @@ const LOGO_BASE =
 type BoardRow = {
   home_short: string;
   away_short: string;
-  fav_short: string | null; // favourite team short, null for PK
-  spread: number | null;    // signed for the favourite (e.g., fav -3.5). PK => 0
+  fav_short: string | null; // favourite team short, null => PK
+  spread: number | null;    // signed for the favourite (e.g., -3.5)
   total: number | null;
 };
 
@@ -57,29 +55,23 @@ function asRec(x: unknown): Record<string, unknown> {
     unknown
   >;
 }
-
 function teamLogo(short?: string | null): string | null {
   if (!short) return null;
   return LOGO_BASE ? `${LOGO_BASE}/${short}.png` : `/teams/${short}.png`;
 }
-
 function fmtSigned(n: number): string {
   if (n === 0) return 'Pick Em';
   return n > 0 ? `+${n}` : `${n}`;
 }
-
-// Given a game’s fav+spread, return the team-specific line
+// line each side based on favourite + spread
 function lineForTeam(team: string, fav: string | null, spread: number | null): number {
   if (spread == null || fav == null) return 0;
-  // our spread is signed for the favourite (e.g., fav -3.5)
   return team === fav ? spread : -spread;
 }
 
 /* ---------------------------- snake order logic -------------------------- */
-/** Rotate weekly. Week 1 starts PLAYERS[0], Week 2 starts PLAYERS[1], etc.
- *  Within the week we snake per round. */
 function onClockName(totalPicksSoFar: number, week: number): string {
-  const n = PLAYERS.length;                 // players per round
+  const n = PLAYERS.length;
   const start = (week - 1) % n;             // rotate weekly
   const round = Math.floor(totalPicksSoFar / n);
   const idxInRound = totalPicksSoFar % n;
@@ -98,7 +90,7 @@ export default function DraftPage() {
   const [picks, setPicks] = useState<PickTableRow[]>([]);
   const [myName, setMyName] = useState<string | null>(null);
 
-  /* who am I? (for client-side turn guard) */
+  /* who am I? */
   useEffect(() => {
     (async () => {
       const { data: auth } = await supabase.auth.getUser();
@@ -125,9 +117,19 @@ export default function DraftPage() {
     const mapped: BoardRow[] = raw.map((r) => {
       const o = asRec(r);
 
-      // accept either 'fav_short' (new) OR 'fav' (older SQL)
-      let favShort = toStr(o.fav_short, '') || toStr(o.fav, '') || '';
-      if (favShort.toUpperCase() === 'PK') favShort = '';
+      // Accept many possible column names for favourite
+      let favShort =
+        toStr(o.fav_short, '') ||
+        toStr(o.fav, '') ||
+        toStr(o.fav_team_short, '') ||
+        toStr(o.fav_team, '') ||
+        toStr(o.favorite_short, '') ||
+        toStr(o.favorite, '') ||
+        toStr(o.favourite_short, '') ||
+        toStr(o.favourite, '');
+
+      favShort = favShort.toUpperCase();
+      if (favShort === 'PK' || favShort === '') favShort = '';
 
       return {
         home_short: toStr(o.home_short),
@@ -232,7 +234,7 @@ export default function DraftPage() {
           <span className="ml-1 text-xs text-zinc-400">{fmtSigned(aLine)}</span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="w-14 text-right tabular-nums">{row.spread == null ? '—' : row.spread}</span>
+          {/* Spread column removed by request */}
           <span className="w-12 text-right tabular-nums">{row.total ?? '—'}</span>
         </div>
       </div>
@@ -240,7 +242,7 @@ export default function DraftPage() {
   }
 
   async function makePick(row: BoardRow, team_short: string) {
-    if (!isMyTurn) return; // client-side guard
+    if (!isMyTurn) return;
     await supabase.from('picks').insert([
       {
         season_year: YEAR,
@@ -279,9 +281,8 @@ export default function DraftPage() {
 
       {/* Board */}
       <section className="border rounded overflow-hidden">
-        <div className="grid grid-cols-[1fr,80px,64px] text-xs px-3 py-2 bg-zinc-900/60 border-b">
+        <div className="grid grid-cols-[1fr,64px] text-xs px-3 py-2 bg-zinc-900/60 border-b">
           <div>Game</div>
-          <div className="text-right">Spread</div>
           <div className="text-right">Total</div>
         </div>
         <div className="divide-y divide-zinc-800/60">
