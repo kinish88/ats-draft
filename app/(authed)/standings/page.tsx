@@ -1,13 +1,11 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 
 const YEAR = 2025;
 const PLAYERS = ['Big Dawg', 'Pud', 'Kinish'] as const;
-
-type WeekRow = { week_number: number };
 
 type WeekSummaryRow = {
   display_name: string;
@@ -17,6 +15,15 @@ type WeekSummaryRow = {
   ou_result: 'win' | 'loss' | 'push' | null;
 };
 
+type WeekRowUnknown = { week_number?: unknown };
+type WeekSummaryUnknown = {
+  display_name?: unknown;
+  spread_wins?: unknown;
+  spread_losses?: unknown;
+  spread_pushes?: unknown;
+  ou_result?: unknown;
+};
+
 type Totals = {
   weekWins: number;
   w: number;
@@ -24,6 +31,21 @@ type Totals = {
   p: number;
 };
 
+function toNum(x: unknown, def = 0): number {
+  if (typeof x === 'number') return Number.isFinite(x) ? x : def;
+  if (typeof x === 'string') {
+    const n = Number(x);
+    return Number.isFinite(n) ? n : def;
+  }
+  return def;
+}
+function toStr(x: unknown, def = ''): string {
+  return typeof x === 'string' ? x : def;
+}
+function toOu(x: unknown): 'win' | 'loss' | 'push' | null {
+  if (x === 'win' || x === 'loss' || x === 'push') return x;
+  return null;
+}
 function pct(w: number, l: number, p: number) {
   const games = w + l + p;
   if (!games) return '—';
@@ -32,7 +54,9 @@ function pct(w: number, l: number, p: number) {
 
 export default function SeasonStandingsPage() {
   const [loading, setLoading] = useState(true);
-  const [rows, setRows] = useState<Array<{ player: string; weekWins: number; w: number; l: number; p: number }>>([]);
+  const [rows, setRows] = useState<
+    Array<{ player: string; weekWins: number; w: number; l: number; p: number }>
+  >([]);
 
   useEffect(() => {
     (async () => {
@@ -40,27 +64,35 @@ export default function SeasonStandingsPage() {
 
       // 1) Which weeks exist?
       const { data: weeksRaw } = await supabase.rpc('list_weeks', { p_year: YEAR });
-      const weeks: number[] =
-        (Array.isArray(weeksRaw) ? weeksRaw : [])
-          .map((w: any) => (typeof w?.week_number === 'number' ? w.week_number : null))
-          .filter((n: number | null): n is number => n !== null) || [];
+      const weeksList = Array.isArray(weeksRaw) ? (weeksRaw as unknown[]) : [];
+      const weeks: number[] = weeksList
+        .map((w) => {
+          const wr = w as WeekRowUnknown;
+          return typeof wr.week_number === 'number' ? wr.week_number : null;
+        })
+        .filter((n): n is number => n !== null);
 
-      // seed totals for each player
+      // seed totals
       const totals = new Map<string, Totals>();
       for (const name of PLAYERS) totals.set(name, { weekWins: 0, w: 0, l: 0, p: 0 });
 
-      // 2) Roll through the season week-by-week
+      // 2) Iterate week-by-week
       for (const w of weeks) {
         const { data } = await supabase.rpc('get_week_summary', { p_year: YEAR, p_week: w });
-        const summary: WeekSummaryRow[] = (Array.isArray(data) ? data : []).map((r: any) => ({
-          display_name: String(r?.display_name ?? ''),
-          spread_wins: Number(r?.spread_wins ?? 0),
-          spread_losses: Number(r?.spread_losses ?? 0),
-          spread_pushes: Number(r?.spread_pushes ?? 0),
-          ou_result: r?.ou_result ?? null,
-        }));
+        const arr = Array.isArray(data) ? (data as unknown[]) : [];
 
-        // accumulate ATS tallies regardless of completeness
+        const summary: WeekSummaryRow[] = arr.map((r) => {
+          const u = r as WeekSummaryUnknown;
+          return {
+            display_name: toStr(u.display_name),
+            spread_wins: toNum(u.spread_wins),
+            spread_losses: toNum(u.spread_losses),
+            spread_pushes: toNum(u.spread_pushes),
+            ou_result: toOu(u.ou_result),
+          };
+        });
+
+        // accumulate ATS tallies
         for (const r of summary) {
           const t = totals.get(r.display_name);
           if (!t) continue;
@@ -69,21 +101,19 @@ export default function SeasonStandingsPage() {
           t.p += r.spread_pushes;
         }
 
-        // award week wins only if every player has all 3 ATS results
+        // only award week wins if every player has 3 graded ATS picks
         const complete = summary.every(
           (r) => r.spread_wins + r.spread_losses + r.spread_pushes === 3
         );
         if (!complete) continue;
 
-        // find ATS leaders
         const maxW = Math.max(...summary.map((r) => r.spread_wins));
         let contenders = summary.filter((r) => r.spread_wins === maxW);
 
+        // tie-break with O/U where available
         if (contenders.length > 1) {
-          // break ties with O/U: prefer ou_result === 'win'
           const ouWinners = contenders.filter((r) => r.ou_result === 'win');
           if (ouWinners.length > 0) contenders = ouWinners;
-          // if still tied (or missing O/U), they all share the week win
         }
 
         for (const r of contenders) {
@@ -92,11 +122,16 @@ export default function SeasonStandingsPage() {
         }
       }
 
-      // shape rows
       const table = PLAYERS.map((name) => {
         const t = totals.get(name)!;
         return { player: name, ...t };
-      }).sort((a, b) => (b.weekWins - a.weekWins) || ((b.w / Math.max(1, b.w + b.l + b.p)) - (a.w / Math.max(1, a.w + a.l + a.p))));
+      }).sort((a, b) => {
+        const byWeekWins = b.weekWins - a.weekWins;
+        if (byWeekWins) return byWeekWins;
+        const aPct = a.w / Math.max(1, a.w + a.l + a.p);
+        const bPct = b.w / Math.max(1, b.w + b.l + b.p);
+        return bPct - aPct;
+      });
 
       setRows(table);
       setLoading(false);
