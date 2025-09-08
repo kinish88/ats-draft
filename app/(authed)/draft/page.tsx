@@ -11,7 +11,7 @@ const LOGO_BASE = (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/,
 /* ----------------------------- types ----------------------------- */
 
 type BoardRow = { home: string; away: string; spread: number | null; total: number | null };
-type DraftBoardRpcRow = { home: unknown; away: unknown; spread: unknown; total: unknown };
+type DraftBoardRpcRow = { home_short?: unknown; away_short?: unknown; spread?: unknown; total?: unknown };
 
 type PickRow = {
   id: number;
@@ -106,12 +106,18 @@ function isOuTableRow(x: unknown): x is OuTableRow {
   );
 }
 
-/* 3-player snake, 9 ATS picks */
-const snakeOrder: string[] = [
-  PLAYERS[0], PLAYERS[1], PLAYERS[2],
-  PLAYERS[2], PLAYERS[1], PLAYERS[0],
-  PLAYERS[0], PLAYERS[1], PLAYERS[2],
-];
+/** Rotate players by week so Week1 starts at index 0, Week2 at 1, Week3 at 2, then repeat. */
+function rotatedPlayersByWeek(players: readonly string[], week: number): string[] {
+  const offset = ((Math.max(1, week) - 1) % players.length);
+  return [...players.slice(offset), ...players.slice(0, offset)];
+}
+
+/** Build 3-player snake order for 9 picks, starting from week-based rotation. */
+function snakeOrderForWeek(week: number): string[] {
+  const r = rotatedPlayersByWeek(PLAYERS as readonly string[], week);
+  // forward, reverse, forward
+  return [r[0], r[1], r[2], r[2], r[1], r[0], r[0], r[1], r[2]];
+}
 
 /* ------------------------------ page ----------------------------- */
 
@@ -124,6 +130,8 @@ export default function DraftPage() {
 
   const onScreenPairsRef = useRef<Set<string>>(new Set());
 
+  const snakeOrder = useMemo(() => snakeOrderForWeek(week), [week]);
+
   const nextPickNumber = useMemo(() => {
     const taken = new Set(picks.map(p => p.pick_number));
     for (let i = 1; i <= 9; i++) if (!taken.has(i)) return i;
@@ -133,7 +141,7 @@ export default function DraftPage() {
   const currentPlayer: string | null = useMemo(() => {
     if (nextPickNumber == null) return null;
     return snakeOrder[nextPickNumber - 1] ?? null;
-  }, [nextPickNumber]);
+  }, [nextPickNumber, snakeOrder]);
 
   const availablePairs = useMemo(() => {
     const pickedPairs = new Set(picks.map(p => `${p.home_short}-${p.away_short}`));
@@ -141,12 +149,12 @@ export default function DraftPage() {
   }, [board, picks]);
 
   async function loadAll(w: number) {
-    // 1) Board (lines)
+    // 1) Board (lines) — correct fields: home_short / away_short
     const { data: b } = await supabase.rpc('get_week_draft_board', { p_year: YEAR, p_week: w });
     const rows = (Array.isArray(b) ? (b as DraftBoardRpcRow[]) : []);
     const boardRows: BoardRow[] = rows.map((r) => ({
-      home: String(r.home ?? ''),
-      away: String(r.away ?? ''),
+      home: String(r.home_short ?? ''),
+      away: String(r.away_short ?? ''),
       spread: r.spread == null ? null : Number(r.spread),
       total: r.total == null ? null : Number(r.total),
     }));
