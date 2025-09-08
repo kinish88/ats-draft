@@ -20,8 +20,8 @@ const LOGO_BASE =
 type BoardRow = {
   home_short: string;
   away_short: string;
-  home_line: number;  // signed line for HOME (PK=0)
-  away_line: number;  // signed line for AWAY (PK=0)
+  home_line: number; // signed for HOME (PK=0)
+  away_line: number; // signed for AWAY (PK=0)
   total: number | null;
 };
 
@@ -67,7 +67,7 @@ function fmtSigned(n: number): string {
 /* ---------------------------- snake order logic -------------------------- */
 function onClockName(totalPicksSoFar: number, week: number): string {
   const n = PLAYERS.length;
-  const start = (week - 1) % n;             // rotate weekly (Week 1 starts PLAYERS[0])
+  const start = (week - 1) % n; // Week 1 starts PLAYERS[0], Week 2 starts PLAYERS[1], etc.
   const round = Math.floor(totalPicksSoFar / n);
   const idxInRound = totalPicksSoFar % n;
   const forward = round % 2 === 0;
@@ -110,10 +110,10 @@ export default function DraftPage() {
 
     const mapped: BoardRow[] = rows.map((r) => {
       const o = asRec(r);
-      const home = toStr(o.home_short).toUpperCase();
-      const away = toStr(o.away_short).toUpperCase();
+      const home = toStr(o.home_short);
+      const away = toStr(o.away_short);
 
-      // Try to read explicit team lines first
+      // Prefer explicit per-team lines if your RPC ever returns them:
       let hLine =
         toNumOrNull(o.home_line) ??
         toNumOrNull(o.home_spread) ??
@@ -123,32 +123,17 @@ export default function DraftPage() {
         toNumOrNull(o.away_spread) ??
         toNumOrNull(o.spread_away);
 
-      // If explicit per-team lines are absent, try (fav + spread)
+      // **CRITICAL FIX**: if absent, treat RPC 'spread' as the HOME line.
+      // (Your SQL shows 'spread' is home-signed; away is the opposite.)
       if (hLine == null || aLine == null) {
-        const spread = toNumOrNull(o.spread);
-        let fav =
-          toStr(o.fav_short, '') ||
-          toStr(o.fav, '') ||
-          toStr(o.fav_team_short, '') ||
-          toStr(o.fav_team, '') ||
-          toStr(o.favorite_short, '') ||
-          toStr(o.favorite, '') ||
-          toStr(o.favourite_short, '') ||
-          toStr(o.favourite, '');
-        fav = fav.toUpperCase();
-
-        if (spread != null && fav) {
-          if (fav === home) {
-            hLine = spread;
-            aLine = -spread;
-          } else if (fav === away) {
-            hLine = -spread;
-            aLine = spread;
-          }
+        const s = toNumOrNull(o.spread);
+        if (s != null) {
+          hLine = s;
+          aLine = -s;
         }
       }
 
-      // Last resort: Pick'em
+      // Last resort: pick'em
       if (hLine == null || aLine == null) {
         hLine = 0;
         aLine = 0;
@@ -210,7 +195,8 @@ export default function DraftPage() {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'picks' },
         (payload: RealtimePostgresChangesPayload<PickTableRow>) => {
-          const rowObj = asRec(payload.new as unknown);
+          const o = payload.new as unknown;
+          const rowObj = asRec(o);
           const y = toNumOrNull(rowObj.season_year) ?? YEAR;
           const w = toNumOrNull(rowObj.week_number) ?? week;
           if (y !== YEAR || w !== week) return;
@@ -266,17 +252,19 @@ export default function DraftPage() {
     if (!isMyTurn) return;
     const teamLine = team_short === row.home_short ? row.home_line : row.away_line;
 
-    await supabase.from('picks').insert([{
-      season_year: YEAR,
-      week_number: week,
-      pick_number: totalPicksSoFar + 1,
-      player_display_name: myName,
-      team_short,
-      home_short: row.home_short,
-      away_short: row.away_short,
-      spread_at_pick: teamLine,   // store line for the side chosen
-      total_at_pick: row.total,
-    }]);
+    await supabase.from('picks').insert([
+      {
+        season_year: YEAR,
+        week_number: week,
+        pick_number: totalPicksSoFar + 1,
+        player_display_name: myName,
+        team_short,
+        home_short: row.home_short,
+        away_short: row.away_short,
+        spread_at_pick: teamLine, // store the team-specific number
+        total_at_pick: row.total,
+      },
+    ]);
   }
 
   /* render */
@@ -293,7 +281,9 @@ export default function DraftPage() {
             onChange={(e) => setWeek(parseInt(e.target.value, 10))}
           >
             {Array.from({ length: 18 }, (_, i) => i + 1).map((w) => (
-              <option key={w} value={w}>Week {w}</option>
+              <option key={w} value={w}>
+                Week {w}
+              </option>
             ))}
           </select>
         </div>
