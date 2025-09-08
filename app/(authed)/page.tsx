@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
@@ -13,8 +12,8 @@ type WeekRow = { week_number: number };
 
 type GameRow = {
   id: number;
-  home: string;           // short, e.g. 'PHI'
-  away: string;           // short, e.g. 'DAL'
+  home: string;           // short (e.g., 'PHI')
+  away: string;           // short (e.g., 'DAL')
   home_score: number | null;
   away_score: number | null;
   live_home_score: number | null;
@@ -27,7 +26,7 @@ type SpreadPickRow = {
   pick_number: number;
   player_display_name: string; // 'Big Dawg' | 'Pud' | 'Kinish'
   team_short: string;          // the team they picked (short)
-  spread: number | null;       // line for that team (signed)
+  spread: number | null;       // signed line for that team
   home_short: string;
   away_short: string;
 };
@@ -40,16 +39,22 @@ type OuPickRow = {
   ou_total: number;
 };
 
+/* --- type guards for realtime payloads (payload.new can be `{}`) --- */
+type PartialGameUpdate = Partial<GameRow> & { id?: number };
+function isGameUpdate(u: unknown): u is PartialGameUpdate {
+  return !!u && typeof (u as any).id === 'number';
+}
+
 /* --------------------------------- utils --------------------------------- */
 
 function signed(n: number | null | undefined): string {
   if (n === null || n === undefined) return '';
-  if (n > 0) return `+${n}`;
-  return `${n}`;
+  return n > 0 ? `+${n}` : `${n}`;
 }
 
-function teamLogo(short: string | null | undefined): string | null {
+function teamLogo(short?: string | null): string | null {
   if (!short) return null;
+  // served from /public/teams/*.png
   return `/teams/${short}.png`;
 }
 
@@ -65,7 +70,8 @@ function pickOutcomeATS(
   pickedTeam: string,
   spreadForPick: number | null
 ): Outcome {
-  if (!game) return 'pending';
+  if (!game || spreadForPick == null) return 'pending';
+
   const finalH = game.home_score;
   const finalA = game.away_score;
   const liveH = game.live_home_score;
@@ -78,7 +84,6 @@ function pickOutcomeATS(
   const away = hasFinal ? (finalA as number) : hasLive ? (liveA as number) : null;
 
   if (home == null || away == null) return 'pending';
-  if (spreadForPick == null) return 'pending';
 
   const pickIsHome = pickedTeam === game.home;
   const pickScore = pickIsHome ? home : away;
@@ -96,6 +101,7 @@ function pickOutcomeOU(
   total: number
 ): Outcome {
   if (!game) return 'pending';
+
   const finalH = game.home_score;
   const finalA = game.away_score;
   const liveH = game.live_home_score;
@@ -126,7 +132,6 @@ function outcomeClass(o: Outcome): string {
 
 function TinyLogo({ url, alt }: { url: string | null | undefined; alt: string }) {
   if (!url) return <span className="inline-block w-4 h-4 mr-2 align-middle" />;
-  // (keep <img> to avoid next/image warnings without config)
   return (
     <img
       alt={alt}
@@ -141,8 +146,12 @@ function StatusPill({ outcome }: { outcome: Outcome }) {
   const classes = outcomeClass(outcome);
   const text =
     outcome === 'pending' ? 'pending' : outcome === 'push' ? 'push' : outcome === 'win' ? 'win' : 'loss';
-  return <span className={`${classes}`}>{text}</span>;
+  return <span className={classes}>{text}</span>;
 }
+
+/* ---------------------------- stable player order ---------------------------- */
+
+const PLAYERS_ORDERED = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
 /* --------------------------------- page ---------------------------------- */
 
@@ -165,15 +174,54 @@ export default function ScoreboardPage() {
 
   const loadAll = async (wk: number) => {
     setLoading(true);
+
     const [gms, sp, ou] = await Promise.all([
       supabase.rpc('get_week_games_for_scoring', { p_year: YEAR, p_week: wk }),
       supabase.rpc('get_week_spread_picks_admin', { p_year: YEAR, p_week: wk }),
       supabase.rpc('get_week_ou_picks_admin', { p_year: YEAR, p_week: wk }),
     ]);
 
-    setGames((gms.data as GameRow[]) ?? []);
-    setSpreadPicks((sp.data as SpreadPickRow[]) ?? []);
-    setOuPicks((ou.data as OuPickRow[]) ?? []);
+    // normalize games: game_id -> id; default live/status to null if absent
+    const gmsRaw = (gms.data as any[]) ?? [];
+    const gmsNorm: GameRow[] = gmsRaw.map(r => ({
+      id: Number(r.id ?? r.game_id),
+      home: r.home,
+      away: r.away,
+      home_score: r.home_score ?? null,
+      away_score: r.away_score ?? null,
+      live_home_score: r.live_home_score ?? null,
+      live_away_score: r.live_away_score ?? null,
+      is_final:
+        typeof r.is_final === 'boolean'
+          ? r.is_final
+          : (r.home_score != null && r.away_score != null),
+      is_live: typeof r.is_live === 'boolean' ? r.is_live : null,
+    }));
+    setGames(gmsNorm);
+
+    // map spread picks: player/spread_at_pick -> player_display_name/spread
+    const spRaw = (sp.data as any[]) ?? [];
+    const spNorm: SpreadPickRow[] = spRaw.map(r => ({
+      pick_number: r.pick_number ?? 0,
+      player_display_name: r.player, // RPC column is "player"
+      team_short: r.team_short,
+      spread: r.spread_at_pick !== null && r.spread_at_pick !== undefined ? Number(r.spread_at_pick) : null,
+      home_short: r.home_short,
+      away_short: r.away_short,
+    }));
+    setSpreadPicks(spNorm);
+
+    // map O/U picks: player/pick_side/total_at_pick -> internal shape
+    const ouRaw = (ou.data as any[]) ?? [];
+    const ouNorm: OuPickRow[] = ouRaw.map(r => ({
+      player_display_name: r.player, // RPC column is "player"
+      home_short: r.home_short,
+      away_short: r.away_short,
+      ou_choice: String(r.pick_side).toUpperCase() === 'UNDER' ? 'UNDER' : 'OVER',
+      ou_total: Number(r.total_at_pick),
+    }));
+    setOuPicks(ouNorm);
+
     setLoading(false);
   };
 
@@ -183,7 +231,6 @@ export default function ScoreboardPage() {
 
   useEffect(() => {
     loadAll(week);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [week]);
 
   /* ------------------------------ live updates ----------------------------- */
@@ -198,11 +245,11 @@ export default function ScoreboardPage() {
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'games' },
         (payload: RealtimePostgresChangesPayload<GameRow>) => {
-          const row = payload.new;
-          if (!row || !gameIdSet.has(row.id)) return;
+          const rowUnknown = payload.new as unknown;
+          if (!isGameUpdate(rowUnknown) || !rowUnknown.id || !gameIdSet.has(rowUnknown.id)) return;
 
           setGames(prev =>
-            prev.map(g => (g.id === row.id ? { ...g, ...row } : g))
+            prev.map(g => (g.id === rowUnknown.id ? ({ ...g, ...rowUnknown } as GameRow) : g))
           );
         }
       )
@@ -221,11 +268,9 @@ export default function ScoreboardPage() {
     return m;
   }, [games]);
 
-  const playersOrdered = ['Big Dawg', 'Pud', 'Kinish'];
-
   const picksByPlayer = useMemo(() => {
     const m = new Map<string, SpreadPickRow[]>();
-    for (const name of playersOrdered) m.set(name, []);
+    for (const name of PLAYERS_ORDERED) m.set(name, []);
     for (const p of spreadPicks) {
       const key = p.player_display_name ?? 'Unknown';
       if (!m.has(key)) m.set(key, []);
@@ -237,10 +282,8 @@ export default function ScoreboardPage() {
 
   const ouByPlayer = useMemo(() => {
     const m = new Map<string, OuPickRow | null>();
-    for (const name of playersOrdered) m.set(name, null);
-    for (const r of ouPicks) {
-      m.set(r.player_display_name, r);
-    }
+    for (const name of PLAYERS_ORDERED) m.set(name, null);
+    for (const r of ouPicks) m.set(r.player_display_name, r);
     return m;
   }, [ouPicks]);
 
@@ -282,7 +325,7 @@ export default function ScoreboardPage() {
         {loading ? (
           <div className="text-sm text-zinc-400">Loading…</div>
         ) : (
-          playersOrdered.map(player => {
+          PLAYERS_ORDERED.map(player => {
             const rows = picksByPlayer.get(player) ?? [];
             return (
               <div key={player} className="border rounded p-4">
@@ -326,7 +369,7 @@ export default function ScoreboardPage() {
       <section className="space-y-3">
         <h2 className="text-lg font-medium">O/U Tie-breakers</h2>
 
-        {playersOrdered.map(name => {
+        {PLAYERS_ORDERED.map(name => {
           const r = ouByPlayer.get(name) || null;
           if (!r) {
             return (
@@ -362,7 +405,6 @@ export default function ScoreboardPage() {
           {games.map(g => {
             const hasFinal = g.home_score != null && g.away_score != null;
             const hasLive = g.live_home_score != null && g.live_away_score != null;
-
             const home = hasFinal ? g.home_score : hasLive ? g.live_home_score : null;
             const away = hasFinal ? g.away_score : hasLive ? g.live_away_score : null;
 
@@ -383,8 +425,6 @@ export default function ScoreboardPage() {
           })}
         </section>
       )}
-
-      {/* no duplicate in-page nav links anymore */}
     </div>
   );
 }
