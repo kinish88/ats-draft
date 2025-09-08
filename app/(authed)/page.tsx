@@ -39,10 +39,45 @@ type OuPickRow = {
   ou_total: number;
 };
 
-/* --- type guards for realtime payloads (payload.new can be `{}`) --- */
+/** RPC result shapes (to avoid `any`) */
+type RpcGameRow = {
+  game_id?: number;
+  id?: number;
+  home: string;
+  away: string;
+  home_score: number | null;
+  away_score: number | null;
+  live_home_score?: number | null;
+  live_away_score?: number | null;
+  is_final?: boolean | null;
+  is_live?: boolean | null;
+};
+
+type RpcSpreadRow = {
+  pick_id?: number;
+  pick_number: number | null;
+  player: string;
+  home_short: string;
+  away_short: string;
+  team_short: string;
+  spread_at_pick: number | null;
+};
+
+type RpcOuRow = {
+  player: string;
+  home_short: string;
+  away_short: string;
+  pick_side: string;          // 'OVER' | 'UNDER'
+  total_at_pick: number;      // numeric
+};
+
+/* --- type guard for realtime payloads (payload.new can be `{}`) --- */
 type PartialGameUpdate = Partial<GameRow> & { id?: number };
 function isGameUpdate(u: unknown): u is PartialGameUpdate {
-  return !!u && typeof (u as any).id === 'number';
+  if (typeof u !== 'object' || u === null) return false;
+  // Narrow using in-operator and a temporary typed view
+  const v = u as { id?: unknown };
+  return typeof v.id === 'number';
 }
 
 /* --------------------------------- utils --------------------------------- */
@@ -74,11 +109,11 @@ function pickOutcomeATS(
 
   const finalH = game.home_score;
   const finalA = game.away_score;
-  const liveH = game.live_home_score;
-  const liveA = game.live_away_score;
+  const liveH  = game.live_home_score;
+  const liveA  = game.live_away_score;
 
   const hasFinal = finalH != null && finalA != null;
-  const hasLive = liveH != null && liveA != null;
+  const hasLive  = liveH  != null && liveA  != null;
 
   const home = hasFinal ? (finalH as number) : hasLive ? (liveH as number) : null;
   const away = hasFinal ? (finalA as number) : hasLive ? (liveA as number) : null;
@@ -86,8 +121,8 @@ function pickOutcomeATS(
   if (home == null || away == null) return 'pending';
 
   const pickIsHome = pickedTeam === game.home;
-  const pickScore = pickIsHome ? home : away;
-  const oppScore = pickIsHome ? away : home;
+  const pickScore  = pickIsHome ? home : away;
+  const oppScore   = pickIsHome ? away : home;
 
   const adj = pickScore + spreadForPick;
   if (adj > oppScore) return 'win';
@@ -104,11 +139,11 @@ function pickOutcomeOU(
 
   const finalH = game.home_score;
   const finalA = game.away_score;
-  const liveH = game.live_home_score;
-  const liveA = game.live_away_score;
+  const liveH  = game.live_home_score;
+  const liveA  = game.live_away_score;
 
   const hasFinal = finalH != null && finalA != null;
-  const hasLive = liveH != null && liveA != null;
+  const hasLive  = liveH  != null && liveA  != null;
 
   const home = hasFinal ? (finalH as number) : hasLive ? (liveH as number) : null;
   const away = hasFinal ? (finalA as number) : hasLive ? (liveA as number) : null;
@@ -122,7 +157,7 @@ function pickOutcomeOU(
 }
 
 function outcomeClass(o: Outcome): string {
-  if (o === 'win') return 'text-emerald-400';
+  if (o === 'win')  return 'text-emerald-400';
   if (o === 'loss') return 'text-rose-400';
   if (o === 'push') return 'text-zinc-300';
   return 'text-zinc-400';
@@ -178,11 +213,11 @@ export default function ScoreboardPage() {
     const [gms, sp, ou] = await Promise.all([
       supabase.rpc('get_week_games_for_scoring', { p_year: YEAR, p_week: wk }),
       supabase.rpc('get_week_spread_picks_admin', { p_year: YEAR, p_week: wk }),
-      supabase.rpc('get_week_ou_picks_admin', { p_year: YEAR, p_week: wk }),
+      supabase.rpc('get_week_ou_picks_admin',    { p_year: YEAR, p_week: wk }),
     ]);
 
     // normalize games: game_id -> id; default live/status to null if absent
-    const gmsRaw = (gms.data as any[]) ?? [];
+    const gmsRaw: RpcGameRow[] = (gms.data as RpcGameRow[]) ?? [];
     const gmsNorm: GameRow[] = gmsRaw.map(r => ({
       id: Number(r.id ?? r.game_id),
       home: r.home,
@@ -199,25 +234,27 @@ export default function ScoreboardPage() {
     }));
     setGames(gmsNorm);
 
-    // map spread picks: player/spread_at_pick -> player_display_name/spread
-    const spRaw = (sp.data as any[]) ?? [];
+    // map spread picks
+    const spRaw: RpcSpreadRow[] = (sp.data as RpcSpreadRow[]) ?? [];
     const spNorm: SpreadPickRow[] = spRaw.map(r => ({
       pick_number: r.pick_number ?? 0,
-      player_display_name: r.player, // RPC column is "player"
+      player_display_name: r.player,
       team_short: r.team_short,
-      spread: r.spread_at_pick !== null && r.spread_at_pick !== undefined ? Number(r.spread_at_pick) : null,
+      spread: r.spread_at_pick !== null && r.spread_at_pick !== undefined
+        ? Number(r.spread_at_pick)
+        : null,
       home_short: r.home_short,
       away_short: r.away_short,
     }));
     setSpreadPicks(spNorm);
 
-    // map O/U picks: player/pick_side/total_at_pick -> internal shape
-    const ouRaw = (ou.data as any[]) ?? [];
+    // map O/U picks
+    const ouRaw: RpcOuRow[] = (ou.data as RpcOuRow[]) ?? [];
     const ouNorm: OuPickRow[] = ouRaw.map(r => ({
-      player_display_name: r.player, // RPC column is "player"
+      player_display_name: r.player,
       home_short: r.home_short,
       away_short: r.away_short,
-      ou_choice: String(r.pick_side).toUpperCase() === 'UNDER' ? 'UNDER' : 'OVER',
+      ou_choice: (String(r.pick_side).toUpperCase() === 'UNDER' ? 'UNDER' : 'OVER'),
       ou_total: Number(r.total_at_pick),
     }));
     setOuPicks(ouNorm);
@@ -311,7 +348,7 @@ export default function ScoreboardPage() {
             <input
               type="checkbox"
               checked={showBoard}
-              onChange={(e) => setShowBoard(e.target.checked)}
+              onChange={(e) => setShowBoard(e.target.checked))}
             />
             Show full scoreboard
           </label>
@@ -338,7 +375,7 @@ export default function ScoreboardPage() {
                     {rows.map((r, idx) => {
                       const pairKey = `${r.home_short}-${r.away_short}`;
                       const g = gameByPair.get(pairKey);
-                      const outcome = pickOutcomeATS(g, r.team_short, r.spread ?? null);
+                      const outcome = pickOutcomeATS(g, r.team_short, r.spread);
 
                       return (
                         <div key={`${player}-${idx}`} className="flex items-center justify-between">
@@ -404,7 +441,7 @@ export default function ScoreboardPage() {
           <h2 className="text-lg font-medium">All Games</h2>
           {games.map(g => {
             const hasFinal = g.home_score != null && g.away_score != null;
-            const hasLive = g.live_home_score != null && g.live_away_score != null;
+            const hasLive  = g.live_home_score != null && g.live_away_score != null;
             const home = hasFinal ? g.home_score : hasLive ? g.live_home_score : null;
             const away = hasFinal ? g.away_score : hasLive ? g.live_away_score : null;
 
