@@ -79,7 +79,7 @@ function signed(n: number | null | undefined) {
   return n > 0 ? `+${n}` : `${n}`;
 }
 
-/* snake order for 3 players, 9 picks total */
+/* 3-player snake, 9 ATS picks */
 const snakeOrder: string[] = [
   PLAYERS[0], PLAYERS[1], PLAYERS[2],
   PLAYERS[2], PLAYERS[1], PLAYERS[0],
@@ -134,18 +134,20 @@ export default function DraftPage() {
       .eq('week_number', w)
       .order('pick_number', { ascending: true });
 
-    const spRows = Array.isArray(sp) ? sp : [];
-    setPicks(spRows.map((r) => ({
-      id: r.id as number,
-      season_year: r.season_year as number,
-      week_number: r.week_number as number,
-      pick_number: r.pick_number as number,
-      player_display_name: String((r as any).player_display_name ?? ''), // v_pick_results guarantees this
-      team_short: String((r as any).team_short ?? ''),
-      home_short: String((r as any).home_short ?? ''),
-      away_short: String((r as any).away_short ?? ''),
-      spread_at_pick: (r as any).spread_at_pick == null ? null : Number((r as any).spread_at_pick),
-    })));
+    const spRows: PickTableRow[] = Array.isArray(sp) ? (sp as unknown[] as PickTableRow[]) : [];
+    setPicks(
+      spRows.map((r): PickRow => ({
+        id: r.id,
+        season_year: r.season_year,
+        week_number: r.week_number,
+        pick_number: r.pick_number,
+        player_display_name: (r.player_display_name ?? r.player_name ?? '') || '',
+        team_short: r.team_short,
+        home_short: r.home_short,
+        away_short: r.away_short,
+        spread_at_pick: r.spread_at_pick,
+      }))
+    );
 
     // 3) O/U so far
     const { data: ou } = await supabase
@@ -154,22 +156,24 @@ export default function DraftPage() {
       .eq('season_year', YEAR)
       .eq('week_number', w);
 
-    const ouRows = Array.isArray(ou) ? ou : [];
-    setOuPicks(ouRows.map((r) => ({
-      id: r.id as number,
-      season_year: r.season_year as number,
-      week_number: r.week_number as number,
-      player_display_name: String((r as any).player_display_name ?? ''),
-      home_short: String((r as any).home_short ?? ''),
-      away_short: String((r as any).away_short ?? ''),
-      pick_side: String((r as any).pick_side ?? 'OVER').toUpperCase() === 'UNDER' ? 'UNDER' : 'OVER',
-      total_at_pick: (r as any).total_at_pick == null ? null : Number((r as any).total_at_pick),
-    })));
+    const ouRows: OuTableRow[] = Array.isArray(ou) ? (ou as unknown[] as OuTableRow[]) : [];
+    setOuPicks(
+      ouRows.map((r): OuPickRow => ({
+        id: r.id,
+        season_year: r.season_year,
+        week_number: r.week_number,
+        player_display_name: (r.player_display_name ?? r.player_name ?? '') || '',
+        home_short: r.home_short,
+        away_short: r.away_short,
+        pick_side: r.pick_side === 'UNDER' ? 'UNDER' : 'OVER',
+        total_at_pick: r.total_at_pick,
+      }))
+    );
   }
 
   useEffect(() => { loadAll(week); }, [week]);
 
-  // realtime: picks
+  // realtime: picks + O/U
   useEffect(() => {
     const ch = supabase
       .channel('draft-live')
@@ -185,7 +189,7 @@ export default function DraftPage() {
             season_year: row.season_year,
             week_number: row.week_number,
             pick_number: row.pick_number,
-            player_display_name: String(row.player_display_name ?? row.player_name ?? ''),
+            player_display_name: (row.player_display_name ?? row.player_name ?? '') || '',
             team_short: row.team_short,
             home_short: row.home_short,
             away_short: row.away_short,
@@ -210,7 +214,7 @@ export default function DraftPage() {
             id: row.id,
             season_year: row.season_year,
             week_number: row.week_number,
-            player_display_name: String(row.player_display_name ?? row.player_name ?? ''),
+            player_display_name: (row.player_display_name ?? row.player_name ?? '') || '',
             home_short: row.home_short,
             away_short: row.away_short,
             pick_side: row.pick_side,
@@ -229,7 +233,7 @@ export default function DraftPage() {
     return () => { supabase.removeChannel(ch); };
   }, [week]);
 
-  async function makeSpreadPick(team: string, pair: { home: string; away: string }) {
+  async function makeSpreadPick(team: string) {
     if (!currentPlayer || nextPickNumber == null) return;
     setMaking(true);
     try {
@@ -266,7 +270,7 @@ export default function DraftPage() {
 
   const playerHasOu = useMemo(() => new Set(ouPicks.map(o => o.player_display_name)), [ouPicks]);
 
-  const atp: Record<string, number> = {
+  const atsLeft: Record<string, number> = {
     'Big Dawg': 3 - picks.filter(p => p.player_display_name === 'Big Dawg').length,
     'Pud': 3 - picks.filter(p => p.player_display_name === 'Pud').length,
     'Kinish': 3 - picks.filter(p => p.player_display_name === 'Kinish').length,
@@ -324,7 +328,7 @@ export default function DraftPage() {
           <div className="text-sm">
             {PLAYERS.map(name => (
               <span key={name} className={`ml-4 ${currentPlayer === name ? 'font-semibold' : ''}`}>
-                {name} ({Math.max(0, atp[name] ?? 0)} left)
+                {name} ({Math.max(0, atsLeft[name] ?? 0)} left)
               </span>
             ))}
           </div>
@@ -380,14 +384,14 @@ export default function DraftPage() {
                       <button
                         className="px-2 py-1 border rounded hover:bg-zinc-800 disabled:opacity-50"
                         disabled={taken || making}
-                        onClick={() => makeSpreadPick(g.home, { home: g.home, away: g.away })}
+                        onClick={() => makeSpreadPick(g.home)}
                       >
                         Pick {g.home}
                       </button>
                       <button
                         className="px-2 py-1 border rounded hover:bg-zinc-800 disabled:opacity-50"
                         disabled={taken || making}
-                        onClick={() => makeSpreadPick(g.away, { home: g.home, away: g.away })}
+                        onClick={() => makeSpreadPick(g.away)}
                       >
                         Pick {g.away}
                       </button>
