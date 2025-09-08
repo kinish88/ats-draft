@@ -345,13 +345,14 @@ export default function ScoreboardPage() {
           </div>
 
           <label className="text-sm flex items-center gap-2 select-none">
-            <input
-              type="checkbox"
-              checked={showBoard}
-              onChange={(e) => setShowBoard(e.target.checked))}
-            />
-            Show full scoreboard
-          </label>
+  <input
+    type="checkbox"
+    checked={showBoard}
+    onChange={(e) => setShowBoard(e.target.checked)}
+  />
+  Show full scoreboard
+</label>
+
         </div>
       </header>
 
