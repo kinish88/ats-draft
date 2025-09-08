@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
@@ -23,7 +23,7 @@ type BoardRow = {
   home_short: string;
   away_short: string;
   fav_short: string | null; // favourite team short, null for PK
-  spread: number | null;    // line shown in feeds (fav’s signed line). PK => 0
+  spread: number | null;    // signed for the favourite (e.g., fav -3.5). PK => 0
   total: number | null;
 };
 
@@ -121,16 +121,23 @@ export default function DraftPage() {
   async function loadBoard(w: number) {
     const { data } = await supabase.rpc('get_week_draft_board', { p_year: YEAR, p_week: w });
     const raw: unknown[] = Array.isArray(data) ? (data as unknown[]) : [];
+
     const mapped: BoardRow[] = raw.map((r) => {
       const o = asRec(r);
+
+      // accept either 'fav_short' (new) OR 'fav' (older SQL)
+      let favShort = toStr(o.fav_short, '') || toStr(o.fav, '') || '';
+      if (favShort.toUpperCase() === 'PK') favShort = '';
+
       return {
         home_short: toStr(o.home_short),
         away_short: toStr(o.away_short),
-        fav_short: toStr(o.fav_short, '') || null,
+        fav_short: favShort || null,
         spread: toNumOrNull(o.spread),
         total: toNumOrNull(o.total),
       };
     });
+
     setBoard(mapped);
   }
 
