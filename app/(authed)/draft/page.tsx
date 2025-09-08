@@ -41,28 +41,39 @@ type PickTableRow = {
 
 /* --------------------------------- utils --------------------------------- */
 
+type SafeRec = Record<string, unknown>;
+
 function toStr(x: unknown, fb = ''): string {
   return typeof x === 'string' ? x : x == null ? fb : String(x);
 }
+
 function toNumOrNull(x: unknown): number | null {
   if (x == null) return null;
-  const n = typeof x === 'number' ? x : Number(x);
-  return Number.isFinite(n) ? n : null;
+  if (typeof x === 'number') return Number.isFinite(x) ? x : null;
+  if (typeof x === 'string') {
+    const s = x.trim();
+    if (!s) return null;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
-function asRec(x: unknown): Record<string, unknown> {
-  return (x && typeof x === 'object' ? (x as Record<string, unknown>) : {}) as Record<
-    string,
-    unknown
-  >;
+
+function asRec(x: unknown): SafeRec {
+  return (x && typeof x === 'object' ? (x as SafeRec) : {}) as SafeRec;
 }
+
 function teamLogo(short?: string | null): string | null {
   if (!short) return null;
   return LOGO_BASE ? `${LOGO_BASE}/${short}.png` : `/teams/${short}.png`;
 }
+
 function fmtSigned(n: number): string {
   if (n === 0) return 'Pick Em';
   return n > 0 ? `+${n}` : `${n}`;
 }
+
+const norm = (s: string | null | undefined) => (s ?? '').trim().toLowerCase();
 
 /* ---------------------------- snake order logic -------------------------- */
 function onClockName(totalPicksSoFar: number, week: number): string {
@@ -83,6 +94,7 @@ export default function DraftPage() {
   const [board, setBoard] = useState<BoardRow[]>([]);
   const [picks, setPicks] = useState<PickTableRow[]>([]);
   const [myName, setMyName] = useState<string | null>(null);
+  const [submittingKey, setSubmittingKey] = useState<string | null>(null);
 
   /* who am I? */
   useEffect(() => {
@@ -110,21 +122,25 @@ export default function DraftPage() {
 
     const mapped: BoardRow[] = rows.map((r) => {
       const o = asRec(r);
-      const home = toStr(o.home_short);
-      const away = toStr(o.away_short);
+      const home = toStr(o.home_short).toUpperCase();
+      const away = toStr(o.away_short).toUpperCase();
 
-      // Prefer explicit per-team lines if your RPC ever returns them:
+      // Try explicit per-team fields first (support multiple possible names)
       let hLine =
         toNumOrNull(o.home_line) ??
         toNumOrNull(o.home_spread) ??
-        toNumOrNull(o.spread_home);
+        toNumOrNull(o.spread_home) ??
+        toNumOrNull(o.line_home);
+
       let aLine =
         toNumOrNull(o.away_line) ??
         toNumOrNull(o.away_spread) ??
-        toNumOrNull(o.spread_away);
+        toNumOrNull(o.spread_away) ??
+        toNumOrNull(o.line_away);
 
-      // **CRITICAL FIX**: if absent, treat RPC 'spread' as the HOME line.
-      // (Your SQL shows 'spread' is home-signed; away is the opposite.)
+      // If explicit team lines missing, derive from a single 'spread' field.
+      // Your SQL shows a numeric spread that is **home-signed**:
+      //   e.g. GB home with -3.5 => home_line = -3.5, away_line = +3.5
       if (hLine == null || aLine == null) {
         const s = toNumOrNull(o.spread);
         if (s != null) {
@@ -139,12 +155,15 @@ export default function DraftPage() {
         aLine = 0;
       }
 
+      // Total (allow 'total' or 'total_line')
+      const tot = toNumOrNull(o.total) ?? toNumOrNull(o.total_line);
+
       return {
         home_short: home,
         away_short: away,
         home_line: hLine,
         away_line: aLine,
-        total: toNumOrNull(o.total),
+        total: tot,
       };
     });
 
@@ -195,8 +214,7 @@ export default function DraftPage() {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'picks' },
         (payload: RealtimePostgresChangesPayload<PickTableRow>) => {
-          const o = payload.new as unknown;
-          const rowObj = asRec(o);
+          const rowObj = asRec(payload.new as unknown);
           const y = toNumOrNull(rowObj.season_year) ?? YEAR;
           const w = toNumOrNull(rowObj.week_number) ?? week;
           if (y !== YEAR || w !== week) return;
@@ -218,14 +236,16 @@ export default function DraftPage() {
         },
       )
       .subscribe();
-    return () => void supabase.removeChannel(ch);
+    return () => {
+      void supabase.removeChannel(ch);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [week]);
 
   /* derived */
   const totalPicksSoFar = picks.length;
   const onClock = onClockName(totalPicksSoFar, week);
-  const isMyTurn = myName != null && onClock === myName;
+  const isMyTurn = norm(myName) !== '' && norm(onClock) === norm(myName);
 
   /* UI bits */
 
@@ -250,10 +270,14 @@ export default function DraftPage() {
 
   async function makePick(row: BoardRow, team_short: string) {
     if (!isMyTurn) return;
-    const teamLine = team_short === row.home_short ? row.home_line : row.away_line;
 
-    await supabase.from('picks').insert([
-      {
+    const teamLine = team_short === row.home_short ? row.home_line : row.away_line;
+    const key = `${row.home_short}-${row.away_short}`;
+
+    try {
+      setSubmittingKey(key);
+
+      const payload = {
         season_year: YEAR,
         week_number: week,
         pick_number: totalPicksSoFar + 1,
@@ -263,8 +287,45 @@ export default function DraftPage() {
         away_short: row.away_short,
         spread_at_pick: teamLine, // store the team-specific number
         total_at_pick: row.total,
-      },
-    ]);
+      };
+
+      const { data, error } = await supabase
+        .from('picks')
+        .insert([payload])
+        .select('*')
+        .single();
+
+      if (error) {
+        // Surface the exact reason (RLS, constraint, etc.)
+        // eslint-disable-next-line no-alert
+        alert(`Could not place pick: ${error.message}`);
+        return;
+      }
+
+      if (data) {
+        const d = asRec(data);
+        const added: PickTableRow = {
+          id: toNumOrNull(d.id) ?? 0,
+          season_year: toNumOrNull(d.season_year) ?? YEAR,
+          week_number: toNumOrNull(d.week_number) ?? week,
+          pick_number: toNumOrNull(d.pick_number) ?? totalPicksSoFar + 1,
+          player_display_name: toStr(d.player_display_name),
+          team_short: toStr(d.team_short),
+          home_short: toStr(d.home_short),
+          away_short: toStr(d.away_short),
+          spread_at_pick: toNumOrNull(d.spread_at_pick),
+          total_at_pick: toNumOrNull(d.total_at_pick),
+          created_at: toStr(d.created_at, null as unknown as string),
+        };
+        setPicks((prev) => [...prev, added].sort((a, b) => a.pick_number - b.pick_number));
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // eslint-disable-next-line no-alert
+      alert(`Could not place pick: ${msg}`);
+    } finally {
+      setSubmittingKey(null);
+    }
   }
 
   /* render */
@@ -321,37 +382,41 @@ export default function DraftPage() {
         </div>
 
         <div className="grid md:grid-cols-2 gap-3">
-          {board.map((r) => (
-            <div key={`${r.home_short}-${r.away_short}`} className="border rounded p-3 flex flex-col gap-2">
-              <div className="flex items-center gap-2">
-                <img src={teamLogo(r.home_short) || ''} alt={r.home_short} className="w-4 h-4" />
-                <span className="font-semibold">{r.home_short}</span>
-                <span className="text-xs text-zinc-400 ml-1">{fmtSigned(r.home_line)}</span>
-                <span className="text-zinc-500 mx-2">v</span>
-                <img src={teamLogo(r.away_short) || ''} alt={r.away_short} className="w-4 h-4" />
-                <span className="font-semibold">{r.away_short}</span>
-                <span className="text-xs text-zinc-400 ml-1">{fmtSigned(r.away_line)}</span>
-                <span className="ml-3 text-xs text-zinc-500">/ {r.total ?? '—'}</span>
-              </div>
+          {board.map((r) => {
+            const key = `${r.home_short}-${r.away_short}`;
+            const disabled = !isMyTurn || submittingKey === key;
+            return (
+              <div key={key} className="border rounded p-3 flex flex-col gap-2">
+                <div className="flex items-center gap-2">
+                  <img src={teamLogo(r.home_short) || ''} alt={r.home_short} className="w-4 h-4" />
+                  <span className="font-semibold">{r.home_short}</span>
+                  <span className="text-xs text-zinc-400 ml-1">{fmtSigned(r.home_line)}</span>
+                  <span className="text-zinc-500 mx-2">v</span>
+                  <img src={teamLogo(r.away_short) || ''} alt={r.away_short} className="w-4 h-4" />
+                  <span className="font-semibold">{r.away_short}</span>
+                  <span className="text-xs text-zinc-400 ml-1">{fmtSigned(r.away_line)}</span>
+                  <span className="ml-3 text-xs text-zinc-500">/ {r.total ?? '—'}</span>
+                </div>
 
-              <div className="flex items-center gap-2">
-                <button
-                  className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                  disabled={!isMyTurn}
-                  onClick={() => makePick(r, r.home_short)}
-                >
-                  Pick {r.home_short} ({fmtSigned(r.home_line)})
-                </button>
-                <button
-                  className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                  disabled={!isMyTurn}
-                  onClick={() => makePick(r, r.away_short)}
-                >
-                  Pick {r.away_short} ({fmtSigned(r.away_line)})
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="border rounded px-2 py-1 text-sm disabled:opacity-40"
+                    disabled={disabled}
+                    onClick={() => makePick(r, r.home_short)}
+                  >
+                    Pick {r.home_short} ({fmtSigned(r.home_line)})
+                  </button>
+                  <button
+                    className="border rounded px-2 py-1 text-sm disabled:opacity-40"
+                    disabled={disabled}
+                    onClick={() => makePick(r, r.away_short)}
+                  >
+                    Pick {r.away_short} ({fmtSigned(r.away_line)})
+                  </button>
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
     </div>
