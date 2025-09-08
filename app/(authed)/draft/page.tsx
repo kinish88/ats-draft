@@ -20,8 +20,8 @@ const LOGO_BASE =
 type BoardRow = {
   home_short: string;
   away_short: string;
-  home_line: number; // signed relative to the home team (negative = home fav)
-  away_line: number; // signed relative to the away team (negative = away fav)
+  home_line: number;  // signed line for HOME (PK=0)
+  away_line: number;  // signed line for AWAY (PK=0)
   total: number | null;
 };
 
@@ -110,8 +110,8 @@ export default function DraftPage() {
 
     const mapped: BoardRow[] = rows.map((r) => {
       const o = asRec(r);
-      const home = toStr(o.home_short);
-      const away = toStr(o.away_short);
+      const home = toStr(o.home_short).toUpperCase();
+      const away = toStr(o.away_short).toUpperCase();
 
       // Try to read explicit team lines first
       let hLine =
@@ -137,7 +137,7 @@ export default function DraftPage() {
           toStr(o.favourite, '');
         fav = fav.toUpperCase();
 
-        if (spread != null && spread !== 0 && fav) {
+        if (spread != null && fav) {
           if (fav === home) {
             hLine = spread;
             aLine = -spread;
@@ -210,8 +210,7 @@ export default function DraftPage() {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'picks' },
         (payload: RealtimePostgresChangesPayload<PickTableRow>) => {
-          const o = payload.new as unknown;
-          const rowObj = asRec(o);
+          const rowObj = asRec(payload.new as unknown);
           const y = toNumOrNull(rowObj.season_year) ?? YEAR;
           const w = toNumOrNull(rowObj.week_number) ?? week;
           if (y !== YEAR || w !== week) return;
@@ -265,22 +264,19 @@ export default function DraftPage() {
 
   async function makePick(row: BoardRow, team_short: string) {
     if (!isMyTurn) return;
-    const teamLine =
-      team_short === row.home_short ? row.home_line : row.away_line;
+    const teamLine = team_short === row.home_short ? row.home_line : row.away_line;
 
-    await supabase.from('picks').insert([
-      {
-        season_year: YEAR,
-        week_number: week,
-        pick_number: totalPicksSoFar + 1,
-        player_display_name: myName,
-        team_short,
-        home_short: row.home_short,
-        away_short: row.away_short,
-        spread_at_pick: teamLine, // store line for the side chosen
-        total_at_pick: row.total,
-      },
-    ]);
+    await supabase.from('picks').insert([{
+      season_year: YEAR,
+      week_number: week,
+      pick_number: totalPicksSoFar + 1,
+      player_display_name: myName,
+      team_short,
+      home_short: row.home_short,
+      away_short: row.away_short,
+      spread_at_pick: teamLine,   // store line for the side chosen
+      total_at_pick: row.total,
+    }]);
   }
 
   /* render */
@@ -297,9 +293,7 @@ export default function DraftPage() {
             onChange={(e) => setWeek(parseInt(e.target.value, 10))}
           >
             {Array.from({ length: 18 }, (_, i) => i + 1).map((w) => (
-              <option key={w} value={w}>
-                Week {w}
-              </option>
+              <option key={w} value={w}>Week {w}</option>
             ))}
           </select>
         </div>
