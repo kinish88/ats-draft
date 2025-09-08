@@ -22,7 +22,13 @@ type GameRow = {
   is_live: boolean | null;
 };
 
-type BaseGameIdRow = { game_id: number };
+type BaseGameRow = {
+  game_id: number;
+  home: string;
+  away: string;
+  home_score: number | null;
+  away_score: number | null;
+};
 
 type AdminSpreadRow = {
   pick_id?: number;
@@ -47,7 +53,7 @@ type AdminOuRow = {
   player: string;
   home_short: string;
   away_short: string;
-  pick_side: string;     // may be mixed case / whitespace
+  pick_side: string; // may vary in case/spaces
   total_at_pick: number;
 };
 
@@ -101,7 +107,7 @@ function pickOutcomeATS(game: GameRow | undefined, pickedTeam: string, spreadFor
 
   const pickIsHome = pickedTeam === game.home;
   const pickScore = pickIsHome ? home : away;
-  const oppScore = pickIsHome ? away : home;
+  const oppScore  = pickIsHome ? away : home;
 
   const adj = (pickScore ?? 0) + spreadForPick;
   if (adj > (oppScore ?? 0)) return 'win';
@@ -135,7 +141,7 @@ function outcomeClass(o: Outcome): string {
 function scoreInfo(game?: GameRow): { text: string; isLive: boolean; isFinal: boolean } {
   if (!game) return { text: '—', isLive: false, isFinal: false };
   const hasFinal = game.home_score != null && game.away_score != null;
-  const hasLive = game.live_home_score != null && game.live_away_score != null;
+  const hasLive  = game.live_home_score != null && game.live_away_score != null;
 
   const home = hasFinal ? game.home_score : hasLive ? game.live_home_score : null;
   const away = hasFinal ? game.away_score : hasLive ? game.live_away_score : null;
@@ -152,7 +158,14 @@ function scoreInfo(game?: GameRow): { text: string; isLive: boolean; isFinal: bo
 
 function TinyLogo({ url, alt, className }: { url: string | null; alt: string; className?: string }) {
   if (!url) return <span className={`inline-block align-middle ${className || 'w-4 h-4 mr-2'}`} />;
-  return <img alt={alt} src={url} className={`inline-block rounded-sm align-middle ${className || 'w-4 h-4 mr-2'}`} loading="eager" />;
+  return (
+    <img
+      alt={alt}
+      src={url}
+      className={`inline-block rounded-sm align-middle ${className || 'w-4 h-4 mr-2'}`}
+      loading="eager"
+    />
+  );
 }
 
 function StatusPill({ outcome }: { outcome: Outcome }) {
@@ -185,35 +198,61 @@ export default function ScoreboardPage() {
   const loadAll = async (w: number) => {
     setLoading(true);
 
-    // 1) ids for the week
-    const { data: baseGames } = await supabase.rpc('get_week_games_for_scoring', { p_year: YEAR, p_week: w });
-    const ids = (Array.isArray(baseGames) ? (baseGames as BaseGameIdRow[]) : []).map(r => Number(r.game_id));
+    // 1) Base data (always gives us something to render)
+    const { data: base } = await supabase.rpc('get_week_games_for_scoring', { p_year: YEAR, p_week: w });
+    const baseRows: BaseGameRow[] = Array.isArray(base) ? (base as any[]).map(r => ({
+      game_id: Number(r.game_id),
+      home: String(r.home),
+      away: String(r.away),
+      home_score: r.home_score ?? null,
+      away_score: r.away_score ?? null,
+    })) : [];
 
-    // 2) full game rows (include live columns)
-    let fullGames: GameRow[] = [];
+    // Pre-populate from RPC (final scores); live fields null for now
+    let merged: GameRow[] = baseRows.map(r => ({
+      id: r.game_id,
+      home: r.home,
+      away: r.away,
+      home_score: r.home_score,
+      away_score: r.away_score,
+      live_home_score: null,
+      live_away_score: null,
+      is_final: (r.home_score != null && r.away_score != null) ? true : null,
+      is_live: null,
+    }));
+
+    // 2) Try to merge in live/status columns from the `games` table
+    const ids = baseRows.map(r => r.game_id);
     if (ids.length) {
-      const { data: rows } = await supabase
+      const { data: liveRows } = await supabase
         .from('games')
         .select('id,home,away,home_score,away_score,live_home_score,live_away_score,is_final,is_live')
         .in('id', ids);
 
-      fullGames = (rows ?? []).map(r => ({
-        id: Number(r.id),
-        home: r.home,
-        away: r.away,
-        home_score: r.home_score ?? null,
-        away_score: r.away_score ?? null,
-        live_home_score: r.live_home_score ?? null,
-        live_away_score: r.live_away_score ?? null,
-        is_final: (typeof r.is_final === 'boolean'
-          ? r.is_final
-          : (r.home_score != null && r.away_score != null)) as boolean,
-        is_live: (typeof r.is_live === 'boolean' ? r.is_live : null) as boolean | null,
-      }));
+      if (Array.isArray(liveRows) && liveRows.length) {
+        const byId = new Map<number, any>();
+        for (const r of liveRows) byId.set(Number(r.id), r);
+        merged = merged.map(g => {
+          const r = byId.get(g.id);
+          if (!r) return g;
+          return {
+            id: g.id,
+            home: r.home ?? g.home,
+            away: r.away ?? g.away,
+            home_score: (r.home_score ?? g.home_score) ?? null,
+            away_score: (r.away_score ?? g.away_score) ?? null,
+            live_home_score: r.live_home_score ?? g.live_home_score,
+            live_away_score: r.live_away_score ?? g.live_away_score,
+            is_final: (typeof r.is_final === 'boolean' ? r.is_final : g.is_final) as boolean | null,
+            is_live: (typeof r.is_live === 'boolean' ? r.is_live : g.is_live) as boolean | null,
+          };
+        });
+      }
     }
-    setGames(fullGames);
 
-    // 3) picks
+    setGames(merged);
+
+    // 3) Picks
     const [{ data: sp }, { data: ou }] = await Promise.all([
       supabase.rpc('get_week_spread_picks_admin', { p_year: YEAR, p_week: w }),
       supabase.rpc('get_week_ou_picks_admin', { p_year: YEAR, p_week: w }),
@@ -296,14 +335,14 @@ export default function ScoreboardPage() {
     }
     for (const [, arr] of m) arr.sort((a, b) => (a.pick_number ?? 0) - (b.pick_number ?? 0));
     return m;
-  }, [spreadPicks]);
+  }, [spreadPicks, playersOrdered]);
 
   const ouByPlayer = useMemo(() => {
     const m = new Map<string, OuPickRow | null>();
     for (const name of playersOrdered) m.set(name, null);
     for (const r of ouPicks) m.set(r.player_display_name, r);
     return m;
-  }, [ouPicks]);
+  }, [ouPicks, playersOrdered]);
 
   /* -------------------------------- render -------------------------------- */
 
@@ -311,7 +350,7 @@ export default function ScoreboardPage() {
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
-      {/* small global styles for live flash + final bold */}
+      {/* styles for live flash + final bold */}
       <style jsx global>{`
         @keyframes scoreFlash { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
         .score-live { animation: scoreFlash 1s ease-in-out infinite; }
@@ -375,9 +414,9 @@ export default function ScoreboardPage() {
                       return (
                         <div key={`${player}-${idx}`} className="flex items-center justify-between">
                           <div className="flex items-center gap-3">
-                            {/* one logo = picked team */}
+                            {/* single logo: picked team */}
                             <TinyLogo url={teamLogo(r.team_short)} alt={r.team_short} />
-                            {/* Short code in bold (better on mobile) */}
+                            {/* short code in bold (mobile-friendly) */}
                             <span className="font-semibold">{r.team_short}</span>
                             <span className="text-zinc-400 text-sm">({matchup(r.home_short, r.away_short)})</span>
                           </div>
@@ -422,7 +461,7 @@ export default function ScoreboardPage() {
           return (
             <div key={name} className="border rounded p-3 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                {/* each team once */}
+                {/* show both teams once (O/U is on the matchup) */}
                 <TinyLogo url={teamLogo(r.home_short)} alt={r.home_short} />
                 <TinyLogo url={teamLogo(r.away_short)} alt={r.away_short} />
                 <span className="font-semibold">{name}</span>
