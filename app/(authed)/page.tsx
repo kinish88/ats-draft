@@ -7,13 +7,12 @@ const YEAR = 2025;
 const PLAYERS_ORDERED = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
 /* ------------------------------- data types ------------------------------- */
-
 type WeekRow = { week_number: number };
 
 type GameRow = {
   id: number;
-  home: string;           // short code
-  away: string;           // short code
+  home: string;
+  away: string;
   home_score: number | null;
   away_score: number | null;
   live_home_score: number | null;
@@ -77,17 +76,20 @@ type OuPickRow = {
   ou_total: number;
 };
 
-/* --------------------------------- config -------------------------------- */
+type WeekSummaryRow = {
+  display_name: string;
+  spread_wins: number;
+  spread_losses: number;
+  spread_pushes: number;
+  ou_result: string | null;
+  is_gold_winner: boolean | null;
+  is_ou_winner: boolean | null;
+};
 
+/* --------------------------------- config -------------------------------- */
 const LOGO_BASE = (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/, '') || null;
 
 /* --------------------------------- utils --------------------------------- */
-
-function getField(o: unknown, key: string): unknown {
-  if (!o || typeof o !== 'object') return undefined;
-  return (o as Record<string, unknown>)[key];
-}
-
 function toNumOrNull(x: unknown): number | null {
   if (x == null) return null;
   const n = typeof x === 'number' ? x : Number(x);
@@ -100,17 +102,14 @@ function toBoolOrNull(x: unknown): boolean | null {
   if (typeof x === 'boolean') return x;
   return null;
 }
-
 function signed(n: number | null | undefined): string {
   if (n === null || n === undefined) return '';
   return n > 0 ? `+${n}` : `${n}`;
 }
-
 function teamLogo(short?: string | null): string | null {
   if (!short) return null;
   return LOGO_BASE ? `${LOGO_BASE}/${short}.png` : `/teams/${short}.png`;
 }
-
 function matchup(a?: string, b?: string): string {
   if (!a || !b) return '';
   return `${a} v ${b}`;
@@ -179,7 +178,6 @@ function scoreInfo(game?: GameRow): { text: string; isLive: boolean; isFinal: bo
 }
 
 /* --------------------------------- cells --------------------------------- */
-
 function TinyLogo({ url, alt, className }: { url: string | null; alt: string; className?: string }) {
   if (!url) return <span className={`inline-block align-middle ${className || 'w-4 h-4 mr-2'}`} />;
   return (
@@ -199,62 +197,63 @@ function StatusPill({ outcome }: { outcome: Outcome }) {
 }
 
 /* --------------------------------- page ---------------------------------- */
-
 export default function ScoreboardPage() {
   const [week, setWeek] = useState<number>(1);
   const [weeks, setWeeks] = useState<number[]>([]);
   const [games, setGames] = useState<GameRow[]>([]);
   const [spreadPicks, setSpreadPicks] = useState<SpreadPickRow[]>([]);
   const [ouPicks, setOuPicks] = useState<OuPickRow[]>([]);
+  const [summary, setSummary] = useState<WeekSummaryRow[]>([]);
   const [showBoard, setShowBoard] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  /* ------------------------------ load weeks ------------------------------ */
+  /* styles for live flash + final bold */
+  const nflLogo = teamLogo('NFL');
 
-  const loadWeeks = async () => {
-    const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
-    const arr = Array.isArray(data) ? (data as unknown[]) : [];
-    const list = arr
-      .map((w) => (w && typeof w === 'object' ? (w as WeekRow).week_number : undefined))
-      .filter((n): n is number => typeof n === 'number');
-
-    setWeeks(list.length ? list : Array.from({ length: 18 }, (_, i) => i + 1));
-  };
-
-  /* ------------------------------- load all ------------------------------- */
+  useEffect(() => {
+    const loadWeeks = async () => {
+      const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
+      const arr = Array.isArray(data) ? (data as unknown[]) : [];
+      const list = arr
+        .map((w) => (w && typeof w === 'object' ? (w as WeekRow).week_number : undefined))
+        .filter((n): n is number => typeof n === 'number');
+      setWeeks(list.length ? list : Array.from({ length: 18 }, (_, i) => i + 1));
+    };
+    loadWeeks();
+  }, []);
 
   const loadAll = async (w: number) => {
     setLoading(true);
 
-    // 1) Base RPC (final scores)
+    // Final score baseline
     const { data: base } = await supabase.rpc('get_week_games_for_scoring', { p_year: YEAR, p_week: w });
     const baseArr = Array.isArray(base) ? (base as unknown[]) : [];
+    const baseMapped = baseArr
+      .map((r): GameRow | null => {
+        const row = r as RpcBaseGameRowUnknown;
+        const id = toNumOrNull(row.game_id);
+        const home = toStr(row.home);
+        const away = toStr(row.away);
+        const hs = toNumOrNull(row.home_score);
+        const as = toNumOrNull(row.away_score);
+        if (id == null || !home || !away) return null;
+        return {
+          id,
+          home,
+          away,
+          home_score: hs,
+          away_score: as,
+          live_home_score: null,
+          live_away_score: null,
+          is_final: hs != null && as != null ? true : null,
+          is_live: null,
+        };
+      })
+      .filter((g): g is GameRow => g !== null);
 
-    const baseMapped = baseArr.map((r): GameRow | null => {
-      const row = r as RpcBaseGameRowUnknown;
-      const id = toNumOrNull(row.game_id);
-      const home = toStr(row.home);
-      const away = toStr(row.away);
-      const hs = toNumOrNull(row.home_score);
-      const as = toNumOrNull(row.away_score);
-      if (id == null || !home || !away) return null;
-      return {
-        id,
-        home,
-        away,
-        home_score: hs,
-        away_score: as,
-        live_home_score: null,
-        live_away_score: null,
-        is_final: hs != null && as != null ? true : null,
-        is_live: null,
-      };
-    }).filter((g): g is GameRow => g !== null);
-
+    // merge in live/status
     let merged = baseMapped;
-
-    // 2) Merge in live/status from games table (best-effort)
-    const ids = merged.map(g => g.id);
+    const ids = merged.map((g) => g.id);
     if (ids.length) {
       const { data: liveRows } = await supabase
         .from('games')
@@ -265,9 +264,8 @@ export default function ScoreboardPage() {
       if (liveArr.length) {
         const byId = new Map<number, DbGameUnknown>();
         for (const r of liveArr) {
-          const rr = r as DbGameUnknown;
-          const id = toNumOrNull(rr.id);
-          if (id != null) byId.set(id, rr);
+          const id = toNumOrNull((r as any).id);
+          if (id != null) byId.set(id, r as DbGameUnknown);
         }
 
         merged = merged.map((g) => {
@@ -279,7 +277,6 @@ export default function ScoreboardPage() {
           const las = toNumOrNull(r.live_away_score);
           const fin = toBoolOrNull(r.is_final);
           const liv = toBoolOrNull(r.is_live);
-
           return {
             id: g.id,
             home: toStr(r.home, g.home),
@@ -297,10 +294,11 @@ export default function ScoreboardPage() {
 
     setGames(merged);
 
-    // 3) Picks
-    const [{ data: sp }, { data: ou }] = await Promise.all([
+    // picks
+    const [{ data: sp }, { data: ou }, { data: sum }] = await Promise.all([
       supabase.rpc('get_week_spread_picks_admin', { p_year: YEAR, p_week: w }),
       supabase.rpc('get_week_ou_picks_admin', { p_year: YEAR, p_week: w }),
+      supabase.rpc('get_week_summary', { p_year: YEAR, p_week: w }),
     ]);
 
     const spArr = Array.isArray(sp) ? (sp as unknown[]) : [];
@@ -320,9 +318,8 @@ export default function ScoreboardPage() {
     const ouArr = Array.isArray(ou) ? (ou as unknown[]) : [];
     const ouMapped: OuPickRow[] = ouArr.map((r) => {
       const x = r as AdminOuRowUnknown;
-      const raw = toStr(x.pick_side).trim().toUpperCase();
-      // tolerate "O", "U", "OVER", "UNDER"
-      const side: 'OVER' | 'UNDER' = raw.startsWith('U') ? 'UNDER' : 'OVER';
+      const sideRaw = toStr(x.pick_side).trim().toUpperCase();
+      const side: 'OVER' | 'UNDER' = sideRaw === 'UNDER' ? 'UNDER' : 'OVER';
       return {
         player_display_name: toStr(x.player),
         home_short: toStr(x.home_short),
@@ -333,109 +330,95 @@ export default function ScoreboardPage() {
     });
     setOuPicks(ouMapped);
 
+    setSummary((Array.isArray(sum) ? (sum as WeekSummaryRow[]) : []) || []);
     setLoading(false);
   };
-
-  useEffect(() => {
-    loadWeeks();
-  }, []);
 
   useEffect(() => {
     loadAll(week);
   }, [week]);
 
-  /* ------------------------------ realtime live --------------------------- */
-
-  // keep a stable Set of the game IDs currently on screen
+  /* realtime + fallback polling (unchanged from your current working version) */
   const idSetRef = useRef<Set<number>>(new Set());
   useEffect(() => {
-    idSetRef.current = new Set(games.map(g => g.id));
+    idSetRef.current = new Set(games.map((g) => g.id));
   }, [games]);
 
-  // Type guards for partial fields
-  const isStr = (x: unknown): x is string => typeof x === 'string';
-  const isNumOrNull = (x: unknown): x is number | null => x === null || typeof x === 'number';
-  const isBoolOrNull = (x: unknown): x is boolean | null => x === null || typeof x === 'boolean';
-
-  // Subscribe ONCE to games updates; patch only defined, type-safe fields
   useEffect(() => {
     const chan = supabase
       .channel('live-games')
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'games' },
-        (payload) => {
-          const u = payload.new as Partial<GameRow> | null;
-          const idRaw = getField(u, 'id');
-          const id = typeof idRaw === 'number' ? idRaw : null;
-          if (id == null || !idSetRef.current.has(id)) return;
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games' }, (payload) => {
+        const u = payload.new as Record<string, unknown>;
+        const id = typeof u.id === 'number' ? (u.id as number) : null;
+        if (id == null || !idSetRef.current.has(id)) return;
 
-          const patch: Partial<GameRow> = {};
-          const home = getField(u, 'home'); if (isStr(home)) patch.home = home;
-          const away = getField(u, 'away'); if (isStr(away)) patch.away = away;
-          const hs = getField(u, 'home_score'); if (isNumOrNull(hs)) patch.home_score = hs;
-          const as = getField(u, 'away_score'); if (isNumOrNull(as)) patch.away_score = as;
-          const lhs = getField(u, 'live_home_score'); if (isNumOrNull(lhs)) patch.live_home_score = lhs;
-          const las = getField(u, 'live_away_score'); if (isNumOrNull(las)) patch.live_away_score = las;
-          const fin = getField(u, 'is_final'); if (isBoolOrNull(fin)) patch.is_final = fin;
-          const liv = getField(u, 'is_live'); if (isBoolOrNull(liv)) patch.is_live = liv;
+        const n = {
+          home: typeof u.home === 'string' ? (u.home as string) : undefined,
+          away: typeof u.away === 'string' ? (u.away as string) : undefined,
+          home_score: typeof u.home_score === 'number' ? (u.home_score as number) : undefined,
+          away_score: typeof u.away_score === 'number' ? (u.away_score as number) : undefined,
+          live_home_score: typeof u.live_home_score === 'number' ? (u.live_home_score as number) : undefined,
+          live_away_score: typeof u.live_away_score === 'number' ? (u.live_away_score as number) : undefined,
+          is_final: typeof u.is_final === 'boolean' ? (u.is_final as boolean) : undefined,
+          is_live: typeof u.is_live === 'boolean' ? (u.is_live as boolean) : undefined,
+        };
 
-          setGames(prev => prev.map(g => (g.id === id ? ({ ...g, ...patch }) : g)));
-        }
-      )
+        setGames((prev) => prev.map((g) => (g.id === id ? { ...g, ...n } : g)));
+      })
       .subscribe();
 
-    return () => { supabase.removeChannel(chan); };
+    return () => {
+      supabase.removeChannel(chan);
+    };
   }, []);
 
-  // Fallback: poll every 15s (re-created when week changes)
   useEffect(() => {
     let cancelled = false;
     if (!games.length) return;
+    const ids = games.map((g) => g.id);
 
-    const ids = games.map(g => g.id);
     const tick = async () => {
       const { data } = await supabase
         .from('games')
         .select('id,home,away,home_score,away_score,live_home_score,live_away_score,is_final,is_live')
         .in('id', ids);
-
       if (!data || cancelled) return;
 
       const byId = new Map<number, Record<string, unknown>>();
       for (const r of data as unknown[]) {
-        const id = getField(r, 'id');
-        if (typeof id === 'number') byId.set(id, r as Record<string, unknown>);
+        if (typeof (r as any).id === 'number') byId.set((r as any).id, r as Record<string, unknown>);
       }
 
-      setGames(prev =>
-        prev.map(g => {
+      setGames((prev) =>
+        prev.map((g) => {
           const r = byId.get(g.id);
           if (!r) return g;
           return {
             ...g,
             home: typeof r.home === 'string' ? (r.home as string) : g.home,
             away: typeof r.away === 'string' ? (r.away as string) : g.away,
-            home_score: typeof r.home_score === 'number' || r.home_score === null ? (r.home_score as number | null) : g.home_score,
-            away_score: typeof r.away_score === 'number' || r.away_score === null ? (r.away_score as number | null) : g.away_score,
-            live_home_score: typeof r.live_home_score === 'number' || r.live_home_score === null ? (r.live_home_score as number | null) : g.live_home_score,
-            live_away_score: typeof r.live_away_score === 'number' || r.live_away_score === null ? (r.live_away_score as number | null) : g.live_away_score,
-            is_final: typeof r.is_final === 'boolean' || r.is_final === null ? (r.is_final as boolean | null) : g.is_final,
-            is_live:  typeof r.is_live  === 'boolean' || r.is_live === null  ? (r.is_live  as boolean | null) : g.is_live,
+            home_score: typeof r.home_score === 'number' ? (r.home_score as number) : g.home_score,
+            away_score: typeof r.away_score === 'number' ? (r.away_score as number) : g.away_score,
+            live_home_score:
+              typeof r.live_home_score === 'number' ? (r.live_home_score as number) : g.live_home_score,
+            live_away_score:
+              typeof r.live_away_score === 'number' ? (r.live_away_score as number) : g.live_away_score,
+            is_final: typeof r.is_final === 'boolean' ? (r.is_final as boolean) : g.is_final,
+            is_live: typeof r.is_live === 'boolean' ? (r.is_live as boolean) : g.is_live,
           };
-        })
+        }),
       );
     };
 
     const iv = setInterval(tick, 15000);
     tick();
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [week, games.length]);
 
-    return () => { cancelled = true; clearInterval(iv); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [week]);
-
-  /* ------------------------------ derived maps ---------------------------- */
-
+  /* derived maps */
   const gameByPair = useMemo(() => {
     const m = new Map<string, GameRow>();
     for (const g of games) m.set(`${g.home}-${g.away}`, g);
@@ -461,23 +444,41 @@ export default function ScoreboardPage() {
     return m;
   }, [ouPicks]);
 
-  /* -------------------------------- render -------------------------------- */
+  // compute week winner from summary
+const winners = useMemo(() => {
+  if (!summary?.length) return [];
+  const top = Math.max(...summary.map(r => r.spread_wins));
+  const cands = summary.filter(r => r.spread_wins === top);
+  const ouWinners = cands.filter(r => r.is_ou_winner);
+  return ouWinners.length ? ouWinners : cands; // allow co-winners
+}, [summary]);
 
-  const nflLogo = teamLogo('NFL');
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
-      {/* styles for live flash + final bold */}
       <style jsx global>{`
-        @keyframes scoreFlash { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
-        .score-live { animation: scoreFlash 1s ease-in-out infinite; }
-        .score-final { font-weight: 700; }
+        @keyframes scoreFlash {
+          0%,
+          100% {
+            opacity: 1;
+          }
+          50% {
+            opacity: 0.35;
+          }
+        }
+        .score-live {
+          animation: scoreFlash 1s ease-in-out infinite;
+        }
+        .score-final {
+          font-weight: 700;
+        }
       `}</style>
 
+      {/* Header: Games (short title) */}
       <header className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <TinyLogo url={nflLogo} alt="NFL" className="w-6 h-6" />
-          <h1 className="text-2xl font-semibold">Week {week} Scoreboard</h1>
+          <h1 className="text-2xl font-semibold">Games</h1>
         </div>
 
         <div className="flex items-center gap-6">
@@ -488,31 +489,42 @@ export default function ScoreboardPage() {
               value={week}
               onChange={(e) => setWeek(parseInt(e.target.value, 10))}
             >
-              {weeks.map(w => (
-                <option key={w} value={w}>Week {w}</option>
+              {weeks.map((w) => (
+                <option key={w} value={w}>
+                  Week {w}
+                </option>
               ))}
             </select>
           </div>
 
           <label className="text-sm flex items-center gap-2 select-none">
-            <input
-              type="checkbox"
-              checked={showBoard}
-              onChange={(e) => setShowBoard(e.target.checked)}
-            />
+            <input type="checkbox" checked={showBoard} onChange={(e) => setShowBoard(e.target.checked)} />
             Show full scoreboard
           </label>
         </div>
       </header>
 
-      {/* ------------------------------- PICKS ------------------------------- */}
+      {/* Winner banner */}
+      {winners.length > 0 && (
+  <div className="rounded-lg border p-3 flex items-center gap-3 bg-black/20">
+    <span className="text-sm text-zinc-300">
+      Week {week} {winners.length > 1 ? 'winners' : 'winner'}:
+    </span>
+    <span className="font-semibold">
+      {winners.map(w => w.display_name).join(', ')}
+    </span>
+  </div>
+)}
+
+
+      {/* Picks */}
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Picks</h2>
 
         {loading ? (
           <div className="text-sm text-zinc-400">Loading…</div>
         ) : (
-          (PLAYERS_ORDERED as readonly string[]).map(player => {
+          (PLAYERS_ORDERED as readonly string[]).map((player) => {
             const rows = picksByPlayer.get(player) ?? [];
             return (
               <div key={player} className="border rounded p-4">
@@ -538,7 +550,11 @@ export default function ScoreboardPage() {
 
                           <div className="flex items-center gap-4">
                             <span className="w-12 text-right">{signed(r.spread)}</span>
-                            <span className={`tabular-nums text-sm text-zinc-300 ${s.isLive ? 'score-live' : s.isFinal ? 'score-final' : ''}`}>
+                            <span
+                              className={`tabular-nums text-sm text-zinc-300 ${
+                                s.isLive ? 'score-live' : s.isFinal ? 'score-final' : ''
+                              }`}
+                            >
                               {s.text}
                             </span>
                             <StatusPill outcome={outcome} />
@@ -554,66 +570,56 @@ export default function ScoreboardPage() {
         )}
       </section>
 
-{/* ---------------------------- O/U TIE-BREAKERS ---------------------------- */}
-<section className="space-y-3">
-  <h2 className="text-lg font-medium">O/U Tie-breakers</h2>
+      {/* O/U Tie-breakers */}
+      <section className="space-y-3">
+        <h2 className="text-lg font-medium">O/U Tie-breakers</h2>
 
-  {(PLAYERS_ORDERED as readonly string[]).map((name) => {
-    const r = ouByPlayer.get(name) || null;
+        {(PLAYERS_ORDERED as readonly string[]).map((name) => {
+          const r = ouByPlayer.get(name) || null;
+          if (!r) {
+            return (
+              <div key={name} className="border rounded p-3 text-sm text-zinc-400">
+                {name}
+              </div>
+            );
+          }
 
-    if (!r) {
-      return (
-        <div key={name} className="border rounded p-3 text-sm text-zinc-400">
-          {name}
-        </div>
-      );
-    }
+          const g = gameByPair.get(`${r.home_short}-${r.away_short}`);
+          const outcome = pickOutcomeOU(g, r.ou_choice, r.ou_total);
+          const s = scoreInfo(g);
 
-    const g = gameByPair.get(`${r.home_short}-${r.away_short}`);
-    const s = scoreInfo(g);
-    const outcome = pickOutcomeOU(g, r.ou_choice, r.ou_total);
-    const selection = r.ou_choice === 'OVER' ? `O/${r.ou_total}` : `U/${r.ou_total}`;
+          return (
+            <div key={name} className="border rounded p-3 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <TinyLogo url={teamLogo('NFL')} alt="NFL" />
+                <span className="font-semibold">{name}</span>
+                <span className="text-zinc-300">{matchup(r.home_short, r.away_short)}</span>
+                <span className="ml-3">{r.ou_choice}</span>
+                <span className="ml-1">{r.ou_total}</span>
+              </div>
+              <div className="flex items-center gap-4">
+                <span
+                  className={`tabular-nums text-sm text-zinc-300 ${
+                    s.isLive ? 'score-live' : s.isFinal ? 'score-final' : ''
+                  }`}
+                >
+                  {s.text}
+                </span>
+                <StatusPill outcome={outcome} />
+              </div>
+            </div>
+          );
+        })}
+      </section>
 
-    return (
-      <div
-        key={name}
-        className="border rounded p-3 flex items-center justify-between"
-      >
-        {/* left: NFL logo + player + selection + matchup */}
-        <div className="flex items-center gap-3">
-          <TinyLogo url={teamLogo('NFL')} alt="NFL" className="w-5 h-5" />
-          <span className="font-semibold">{name}</span>
-          <span>{selection}</span>
-          <span className="text-zinc-300">
-            {r.home_short} <span className="opacity-60">V</span> {r.away_short}
-          </span>
-        </div>
-
-        {/* right: score + result */}
-        <div className="flex items-center gap-4">
-          <span
-            className={`tabular-nums text-sm text-zinc-300 ${
-              s.isLive ? 'score-live' : s.isFinal ? 'score-final' : ''
-            }`}
-          >
-            {s.text}
-          </span>
-          <span className={outcomeClass(outcome)}>{outcome}</span>
-          {/* or keep your pill: <StatusPill outcome={outcome} /> */}
-        </div>
-      </div>
-    );
-  })}
-</section>
-
-      {/* --------------------------- FULL SCOREBOARD --------------------------- */}
+      {/* All Games */}
       {showBoard && (
         <section className="space-y-2">
           <h2 className="text-lg font-medium">All Games</h2>
           {games.length === 0 ? (
             <div className="text-sm text-zinc-400">No games</div>
           ) : (
-            games.map(g => {
+            games.map((g) => {
               const s = scoreInfo(g);
               return (
                 <div key={g.id} className="border rounded p-2 flex items-center justify-between">
