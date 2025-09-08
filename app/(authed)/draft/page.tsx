@@ -35,13 +35,11 @@ type PickRow = {
   player_display_name: string;
   spread_at_pick: number | null;
   created_at: string | null;
-  // present in your table; useful for debugging but not required for logic
   home_short?: string | null;
   away_short?: string | null;
 };
 
 type WeekRow = { id: number };
-
 type TeamRow = { id: number; short: string };
 
 /* --------------------------------- utils --------------------------------- */
@@ -297,6 +295,37 @@ export default function DraftPage() {
     return s;
   }, [picks]);
 
+  /* helper: ensure we have a week_id before inserting */
+  async function ensureWeekId(): Promise<number | null> {
+    if (weekId != null) return weekId;
+
+    // Try fetch
+    {
+      const { data } = await supabase
+        .from('weeks')
+        .select('id')
+        .eq('season_year', YEAR)
+        .eq('week_number', week)
+        .maybeSingle();
+      const wid = (data as WeekRow | null)?.id ?? null;
+      if (wid != null) {
+        setWeekId(wid);
+        return wid;
+      }
+    }
+
+    // Try create (safe if you seeded already; else will insert)
+    const { data: ins, error } = await supabase
+      .from('weeks')
+      .insert([{ season_year: YEAR, week_number: week }])
+      .select('id')
+      .single();
+    if (error) return null;
+    const wid = (ins as WeekRow).id;
+    setWeekId(wid);
+    return wid;
+  }
+
   /* UI bits */
 
   function GameRow({ row }: { row: BoardRow }) {
@@ -320,8 +349,10 @@ export default function DraftPage() {
 
   async function makePick(row: BoardRow, team_short: string) {
     if (!isMyTurn) return;
-    if (weekId == null) {
-      alert('No week is active for this selection.');
+
+    const wid = await ensureWeekId();
+    if (wid == null) {
+      alert('No week row found/created for this week.');
       return;
     }
 
@@ -336,17 +367,17 @@ export default function DraftPage() {
     }
 
     const payload = {
-      week_id: weekId,
+      week_id: wid,
       game_id: gameId,
       team_id: teamId,
       pick_number: totalPicksSoFar + 1,
       player_display_name: myName,
       spread_at_pick: spread,
-      home_short: row.home_short, // keep these for readability/history
+      home_short: row.home_short,
       away_short: row.away_short,
     };
 
-    const key = `${row.home_short}-${row.away_short}`;
+    const key = `${row.game_id}:${row.home_short}-${row.away_short}`;
     try {
       setSubmittingKey(key);
 
@@ -365,7 +396,7 @@ export default function DraftPage() {
         const d = asRec(data);
         const added: PickRow = {
           id: Number(d.id ?? 0),
-          week_id: Number(d.week_id ?? weekId),
+          week_id: Number(d.week_id ?? wid),
           game_id: toNumOrNull(d.game_id),
           team_id: toNumOrNull(d.team_id),
           pick_number: Number(d.pick_number ?? totalPicksSoFar + 1),
@@ -441,11 +472,14 @@ export default function DraftPage() {
             const homeId = shortToId.get(r.home_short) ?? null;
             const awayId = shortToId.get(r.away_short) ?? null;
 
-            const homeTaken = r.game_id != null && homeId != null && takenKey.has(`${r.game_id}:${homeId}`);
-            const awayTaken = r.game_id != null && awayId != null && takenKey.has(`${r.game_id}:${awayId}`);
+            const homeTaken =
+              r.game_id != null && homeId != null && takenKey.has(`${r.game_id}:${homeId}`);
+            const awayTaken =
+              r.game_id != null && awayId != null && takenKey.has(`${r.game_id}:${awayId}`);
 
-            const homeDisabled = !isMyTurn || submittingKey === key || homeTaken || weekId == null;
-            const awayDisabled = !isMyTurn || submittingKey === key || awayTaken || weekId == null;
+            // IMPORTANT: do NOT disable on weekId === null; we resolve it on click
+            const homeDisabled = !isMyTurn || submittingKey === key || homeTaken;
+            const awayDisabled = !isMyTurn || submittingKey === key || awayTaken;
 
             return (
               <div key={key} className="border rounded p-3 flex flex-col gap-2">
