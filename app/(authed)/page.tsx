@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
@@ -83,6 +83,11 @@ type OuPickRow = {
 const LOGO_BASE = (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/, '') || null;
 
 /* --------------------------------- utils --------------------------------- */
+
+function getField(o: unknown, key: string): unknown {
+  if (!o || typeof o !== 'object') return undefined;
+  return (o as Record<string, unknown>)[key];
+}
 
 function isFiniteNum(x: unknown): x is number {
   return typeof x === 'number' && Number.isFinite(x);
@@ -350,27 +355,96 @@ export default function ScoreboardPage() {
 
   /* ------------------------------ realtime live --------------------------- */
 
-  useEffect(() => {
-    if (!games.length) return;
+  // keep a stable Set of the game IDs currently on screen
+const idSetRef = useRef<Set<number>>(new Set());
+useEffect(() => {
+  idSetRef.current = new Set(games.map(g => g.id));
+}, [games]);
 
-    const idSet = new Set(games.map(g => g.id));
-    const chan = supabase
-      .channel('live-games')
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'games' },
-        (payload: RealtimePostgresChangesPayload<GameRow>) => {
-          const rowUnknown = payload.new as unknown;
-          if (!isGameRow(rowUnknown) || !idSet.has(rowUnknown.id)) return;
-          setGames(prev => prev.map(g => (g.id === rowUnknown.id ? { ...g, ...rowUnknown } : g)));
-        }
-      )
-      .subscribe();
+// Subscribe ONCE to games updates
+useEffect(() => {
+  const chan = supabase
+    .channel('live-games')
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'games' },
+      (payload) => {
+        const u = payload.new as unknown;
+        const id = typeof getField(u, 'id') === 'number' ? (getField(u, 'id') as number) : null;
+        if (id == null || !idSetRef.current.has(id)) return;
 
-    return () => {
-      supabase.removeChannel(chan);
-    };
-  }, [games]);
+        // normalize fields safely
+        const home        = typeof getField(u, 'home') === 'string' ? (getField(u, 'home') as string) : undefined;
+        const away        = typeof getField(u, 'away') === 'string' ? (getField(u, 'away') as string) : undefined;
+        const hs          = getField(u, 'home_score');       const as_ = getField(u, 'away_score');
+        const lhs         = getField(u, 'live_home_score');  const las = getField(u, 'live_away_score');
+        const isFinalRaw  = getField(u, 'is_final');          const isLiveRaw = getField(u, 'is_live');
+
+        const n = {
+          home,
+          away,
+          home_score: typeof hs  === 'number' ? (hs  as number) : undefined,
+          away_score: typeof as_ === 'number' ? (as_ as number) : undefined,
+          live_home_score: typeof lhs === 'number' ? (lhs as number) : undefined,
+          live_away_score: typeof las === 'number' ? (las as number) : undefined,
+          is_final: typeof isFinalRaw === 'boolean' ? (isFinalRaw as boolean) : undefined,
+          is_live:  typeof isLiveRaw  === 'boolean' ? (isLiveRaw  as boolean) : undefined,
+        };
+
+        setGames(prev => prev.map(g => (g.id === id ? { ...g, ...n } : g)));
+      }
+    )
+    .subscribe();
+
+  return () => { supabase.removeChannel(chan); };
+}, []);
+
+// Fallback: poll every 15s (re-created when week changes)
+useEffect(() => {
+  let cancelled = false;
+  if (!games.length) return;
+
+  const ids = games.map(g => g.id);
+  const tick = async () => {
+    const { data } = await supabase
+      .from('games')
+      .select('id,home,away,home_score,away_score,live_home_score,live_away_score,is_final,is_live')
+      .in('id', ids);
+
+    if (!data || cancelled) return;
+
+    const byId = new Map<number, Record<string, unknown>>();
+    for (const r of data as unknown[]) {
+      const id = getField(r, 'id');
+      if (typeof id === 'number') byId.set(id, r as Record<string, unknown>);
+    }
+
+    setGames(prev =>
+      prev.map(g => {
+        const r = byId.get(g.id);
+        if (!r) return g;
+        return {
+          ...g,
+          home: typeof r.home === 'string' ? (r.home as string) : g.home,
+          away: typeof r.away === 'string' ? (r.away as string) : g.away,
+          home_score: typeof r.home_score === 'number' ? (r.home_score as number) : g.home_score,
+          away_score: typeof r.away_score === 'number' ? (r.away_score as number) : g.away_score,
+          live_home_score: typeof r.live_home_score === 'number' ? (r.live_home_score as number) : g.live_home_score,
+          live_away_score: typeof r.live_away_score === 'number' ? (r.live_away_score as number) : g.live_away_score,
+          is_final: typeof r.is_final === 'boolean' ? (r.is_final as boolean) : g.is_final,
+          is_live:  typeof r.is_live  === 'boolean' ? (r.is_live  as boolean) : g.is_live,
+        };
+      })
+    );
+  };
+
+  const iv = setInterval(tick, 15000);
+  tick();
+
+  return () => { cancelled = true; clearInterval(iv); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [week]);
+
 
   /* ------------------------------ derived maps ---------------------------- */
 
