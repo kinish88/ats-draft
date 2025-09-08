@@ -1,101 +1,153 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
 const YEAR = 2025;
 
-/* ------------------------------- DB row types ------------------------------ */
+/* ------------------------------- data types ------------------------------- */
 
 type WeekRow = { week_number: number };
 
 type GameRow = {
   id: number;
-  season_year: number;
-  week_number: number;
-  home: string;                 // short, e.g., 'PHI'
-  away: string;                 // short, e.g., 'DAL'
-  kickoff: string | null;
-  home_score: number | null;    // final
-  away_score: number | null;    // final
+  home: string;           // short (e.g., 'PHI')
+  away: string;           // short (e.g., 'DAL')
+  home_score: number | null;
+  away_score: number | null;
   live_home_score: number | null;
   live_away_score: number | null;
   is_final: boolean | null;
   is_live: boolean | null;
 };
 
-type SpreadPickAdminRow = {
-  pick_id: number;
+type SpreadPickRow = {
   pick_number: number;
-  player: string;          // 'Big Dawg' | 'Pud' | 'Kinish'
+  player_display_name: string; // 'Big Dawg' | 'Pud' | 'Kinish'
+  team_short: string;          // the team they picked (short)
+  spread: number | null;       // signed line for that team
+  home_short: string;
+  away_short: string;
+};
+
+type OuPickRow = {
+  player_display_name: string;
+  home_short: string;
+  away_short: string;
+  ou_choice: 'OVER' | 'UNDER';
+  ou_total: number;
+};
+
+/** RPC result shapes (to avoid `any`) */
+type RpcGameRow = {
+  game_id?: number;
+  id?: number;
+  home: string;
+  away: string;
+  home_score: number | null;
+  away_score: number | null;
+  live_home_score?: number | null;
+  live_away_score?: number | null;
+  is_final?: boolean | null;
+  is_live?: boolean | null;
+};
+
+type RpcSpreadRow = {
+  pick_id?: number;
+  pick_number: number | null;
+  player: string;
   home_short: string;
   away_short: string;
   team_short: string;
   spread_at_pick: number | null;
 };
 
-type OuPickAdminRow = {
-  player: string;          // 'Big Dawg' | 'Pud' | 'Kinish'
+type RpcOuRow = {
+  player: string;
   home_short: string;
   away_short: string;
-  pick_side: 'OVER' | 'UNDER';
-  total_at_pick: number;
+  pick_side: string;          // 'OVER' | 'UNDER'
+  total_at_pick: number;      // numeric
 };
 
-type TeamLogoRow = { short_name: string; logo_url: string | null };
+/* --- type guard for realtime payloads (payload.new can be `{}`) --- */
+type PartialGameUpdate = Partial<GameRow> & { id?: number };
+function isGameUpdate(u: unknown): u is PartialGameUpdate {
+  if (typeof u !== 'object' || u === null) return false;
+  // Narrow using in-operator and a temporary typed view
+  const v = u as { id?: unknown };
+  return typeof v.id === 'number';
+}
 
-/* ---------------------------------- utils --------------------------------- */
-
-type Outcome = 'win' | 'loss' | 'push' | 'pending';
+/* --------------------------------- utils --------------------------------- */
 
 function signed(n: number | null | undefined): string {
   if (n === null || n === undefined) return '';
   return n > 0 ? `+${n}` : `${n}`;
 }
 
-function outcomeClass(o: Outcome): string {
-  if (o === 'win') return 'text-emerald-400';
-  if (o === 'loss') return 'text-rose-400';
-  if (o === 'push') return 'text-amber-300';
-  return 'text-zinc-400';
+function teamLogo(short?: string | null): string | null {
+  if (!short) return null;
+  // served from /public/teams/*.png
+  return `/teams/${short}.png`;
 }
 
-function bestScore(g?: GameRow | null): { home: number | null; away: number | null; tag: 'LIVE' | 'FINAL' | null } {
-  if (!g) return { home: null, away: null, tag: null };
-  const hasLive = g.live_home_score != null && g.live_away_score != null;
-  const hasFinal = g.home_score != null && g.away_score != null;
-
-  if (hasLive && !g.is_final) {
-    return { home: g.live_home_score!, away: g.live_away_score!, tag: 'LIVE' };
-  }
-  if (hasFinal) {
-    return { home: g.home_score!, away: g.away_score!, tag: 'FINAL' };
-  }
-  // fallbacks
-  if (hasLive) return { home: g.live_home_score!, away: g.live_away_score!, tag: 'LIVE' };
-  if (hasFinal) return { home: g.home_score!, away: g.away_score!, tag: 'FINAL' };
-  return { home: null, away: null, tag: null };
+function matchup(a?: string, b?: string): string {
+  if (!a || !b) return '';
+  return `${a} v ${b}`;
 }
 
-function pickOutcomeATS(game: GameRow | undefined, pickedTeam: string, spreadForPick: number | null): Outcome {
+type Outcome = 'win' | 'loss' | 'push' | 'pending';
+
+function pickOutcomeATS(
+  game: GameRow | undefined,
+  pickedTeam: string,
+  spreadForPick: number | null
+): Outcome {
   if (!game || spreadForPick == null) return 'pending';
-  const { home, away } = bestScore(game);
+
+  const finalH = game.home_score;
+  const finalA = game.away_score;
+  const liveH  = game.live_home_score;
+  const liveA  = game.live_away_score;
+
+  const hasFinal = finalH != null && finalA != null;
+  const hasLive  = liveH  != null && liveA  != null;
+
+  const home = hasFinal ? (finalH as number) : hasLive ? (liveH as number) : null;
+  const away = hasFinal ? (finalA as number) : hasLive ? (liveA as number) : null;
+
   if (home == null || away == null) return 'pending';
 
   const pickIsHome = pickedTeam === game.home;
-  const pickScore = pickIsHome ? home : away;
-  const oppScore = pickIsHome ? away : home;
+  const pickScore  = pickIsHome ? home : away;
+  const oppScore   = pickIsHome ? away : home;
 
-  const adjusted = pickScore + spreadForPick;
-  if (adjusted > oppScore) return 'win';
-  if (adjusted < oppScore) return 'loss';
+  const adj = pickScore + spreadForPick;
+  if (adj > oppScore) return 'win';
+  if (adj < oppScore) return 'loss';
   return 'push';
 }
 
-function pickOutcomeOU(game: GameRow | undefined, choice: 'OVER' | 'UNDER', total: number): Outcome {
+function pickOutcomeOU(
+  game: GameRow | undefined,
+  choice: 'OVER' | 'UNDER',
+  total: number
+): Outcome {
   if (!game) return 'pending';
-  const { home, away } = bestScore(game);
+
+  const finalH = game.home_score;
+  const finalA = game.away_score;
+  const liveH  = game.live_home_score;
+  const liveA  = game.live_away_score;
+
+  const hasFinal = finalH != null && finalA != null;
+  const hasLive  = liveH  != null && liveA  != null;
+
+  const home = hasFinal ? (finalH as number) : hasLive ? (liveH as number) : null;
+  const away = hasFinal ? (finalA as number) : hasLive ? (liveA as number) : null;
+
   if (home == null || away == null) return 'pending';
 
   const sum = home + away;
@@ -104,126 +156,138 @@ function pickOutcomeOU(game: GameRow | undefined, choice: 'OVER' | 'UNDER', tota
   return sum < total ? 'win' : 'loss';
 }
 
-/* --------------------------------- cells ---------------------------------- */
+function outcomeClass(o: Outcome): string {
+  if (o === 'win')  return 'text-emerald-400';
+  if (o === 'loss') return 'text-rose-400';
+  if (o === 'push') return 'text-zinc-300';
+  return 'text-zinc-400';
+}
+
+/* --------------------------------- cells --------------------------------- */
 
 function TinyLogo({ url, alt }: { url: string | null | undefined; alt: string }) {
-  if (!url) return <span className="inline-block w-5 h-5 mr-2 align-middle" />;
+  if (!url) return <span className="inline-block w-4 h-4 mr-2 align-middle" />;
   return (
     <img
       alt={alt}
       src={url}
-      className="inline-block w-5 h-5 mr-2 rounded-sm align-middle"
+      className="inline-block w-4 h-4 mr-2 rounded-sm align-middle"
       loading="eager"
     />
   );
 }
 
 function StatusPill({ outcome }: { outcome: Outcome }) {
-  const text = outcome === 'pending' ? 'pending' : outcome === 'push' ? 'push' : outcome === 'win' ? 'win' : 'loss';
-  return <span className={`${outcomeClass(outcome)} tabular-nums`}>{text}</span>;
+  const classes = outcomeClass(outcome);
+  const text =
+    outcome === 'pending' ? 'pending' : outcome === 'push' ? 'push' : outcome === 'win' ? 'win' : 'loss';
+  return <span className={classes}>{text}</span>;
 }
 
-function ScoreText({ g }: { g?: GameRow }) {
-  const { home, away, tag } = bestScore(g);
-  if (home == null || away == null) return <span className="text-zinc-400 tabular-nums">— —</span>;
-  return (
-    <span className="tabular-nums">
-      {home} — {away}
-      {tag ? <span className="ml-2 text-[10px] opacity-70">{tag}</span> : null}
-    </span>
-  );
-}
+/* ---------------------------- stable player order ---------------------------- */
 
-/* --------------------------------- page ----------------------------------- */
+const PLAYERS_ORDERED = ['Big Dawg', 'Pud', 'Kinish'] as const;
+
+/* --------------------------------- page ---------------------------------- */
 
 export default function ScoreboardPage() {
   const [week, setWeek] = useState<number>(1);
   const [weeks, setWeeks] = useState<number[]>([]);
   const [games, setGames] = useState<GameRow[]>([]);
-  const [spreadPicks, setSpreadPicks] = useState<SpreadPickAdminRow[]>([]);
-  const [ouPicks, setOuPicks] = useState<OuPickAdminRow[]>([]);
-  const [logoMap, setLogoMap] = useState<Record<string, string>>({});
+  const [spreadPicks, setSpreadPicks] = useState<SpreadPickRow[]>([]);
+  const [ouPicks, setOuPicks] = useState<OuPickRow[]>([]);
   const [showBoard, setShowBoard] = useState(false);
-  const playersOrdered = ['Big Dawg', 'Pud', 'Kinish'];
+  const [loading, setLoading] = useState(true);
 
-  /* ------------------------------- data loads ------------------------------ */
+  /* ------------------------------ data loading ----------------------------- */
 
-  const loadWeeks = useCallback(async () => {
+  const loadWeeks = async () => {
     const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
-    const list = (data as WeekRow[] | null)?.map((w) => w.week_number) ?? [];
+    const list = (data as WeekRow[] | null)?.map(w => w.week_number) ?? [];
     setWeeks(list.length ? list : Array.from({ length: 18 }, (_, i) => i + 1));
-  }, []);
+  };
 
-  const loadLogos = useCallback(async () => {
-    const { data, error } = await supabase.from('teams').select('short_name, logo_url');
-    if (!error && data) {
-      const map: Record<string, string> = {};
-      (data as TeamLogoRow[]).forEach((t) => {
-        if (t.logo_url) map[t.short_name] = t.logo_url;
-      });
-      setLogoMap(map);
-    }
-  }, []);
+  const loadAll = async (wk: number) => {
+    setLoading(true);
 
-  const teamLogo = useCallback(
-    (short: string | null | undefined): string | null => {
-      if (!short) return null;
-      return logoMap[short] ?? `/teams/${short}.png`;
-    },
-    [logoMap]
-  );
+    const [gms, sp, ou] = await Promise.all([
+      supabase.rpc('get_week_games_for_scoring', { p_year: YEAR, p_week: wk }),
+      supabase.rpc('get_week_spread_picks_admin', { p_year: YEAR, p_week: wk }),
+      supabase.rpc('get_week_ou_picks_admin',    { p_year: YEAR, p_week: wk }),
+    ]);
 
-  const loadAll = useCallback(
-    async (w: number) => {
-      // 1) games (directly from table so we get LIVE + FINAL fields)
-      const gq = await supabase
-        .from('games')
-        .select(
-          'id, season_year, week_number, kickoff, home, away, home_score, away_score, live_home_score, live_away_score, is_final, is_live'
-        )
-        .eq('season_year', YEAR)
-        .eq('week_number', w)
-        .order('kickoff', { ascending: true });
+    // normalize games: game_id -> id; default live/status to null if absent
+    const gmsRaw: RpcGameRow[] = (gms.data as RpcGameRow[]) ?? [];
+    const gmsNorm: GameRow[] = gmsRaw.map(r => ({
+      id: Number(r.id ?? r.game_id),
+      home: r.home,
+      away: r.away,
+      home_score: r.home_score ?? null,
+      away_score: r.away_score ?? null,
+      live_home_score: r.live_home_score ?? null,
+      live_away_score: r.live_away_score ?? null,
+      is_final:
+        typeof r.is_final === 'boolean'
+          ? r.is_final
+          : (r.home_score != null && r.away_score != null),
+      is_live: typeof r.is_live === 'boolean' ? r.is_live : null,
+    }));
+    setGames(gmsNorm);
 
-      const gameRows = (gq.data as GameRow[]) ?? [];
-      setGames(gameRows);
+    // map spread picks
+    const spRaw: RpcSpreadRow[] = (sp.data as RpcSpreadRow[]) ?? [];
+    const spNorm: SpreadPickRow[] = spRaw.map(r => ({
+      pick_number: r.pick_number ?? 0,
+      player_display_name: r.player,
+      team_short: r.team_short,
+      spread: r.spread_at_pick !== null && r.spread_at_pick !== undefined
+        ? Number(r.spread_at_pick)
+        : null,
+      home_short: r.home_short,
+      away_short: r.away_short,
+    }));
+    setSpreadPicks(spNorm);
 
-      // 2) spread picks (admin RPC has real team shorts + spread)
-      const sp = await supabase.rpc('get_week_spread_picks_admin', { p_year: YEAR, p_week: w });
-      setSpreadPicks((sp.data as SpreadPickAdminRow[]) ?? []);
+    // map O/U picks
+    const ouRaw: RpcOuRow[] = (ou.data as RpcOuRow[]) ?? [];
+    const ouNorm: OuPickRow[] = ouRaw.map(r => ({
+      player_display_name: r.player,
+      home_short: r.home_short,
+      away_short: r.away_short,
+      ou_choice: (String(r.pick_side).toUpperCase() === 'UNDER' ? 'UNDER' : 'OVER'),
+      ou_total: Number(r.total_at_pick),
+    }));
+    setOuPicks(ouNorm);
 
-      // 3) O/U picks (admin RPC: home/away + side + total)
-      const ou = await supabase.rpc('get_week_ou_picks_admin', { p_year: YEAR, p_week: w });
-      setOuPicks((ou.data as OuPickAdminRow[]) ?? []);
-    },
-    []
-  );
+    setLoading(false);
+  };
 
   useEffect(() => {
     loadWeeks();
-    loadLogos();
-  }, [loadWeeks, loadLogos]);
+  }, []);
 
   useEffect(() => {
     loadAll(week);
-  }, [week, loadAll]);
+  }, [week]);
 
-  /* ------------------------------ realtime sync ---------------------------- */
+  /* ------------------------------ live updates ----------------------------- */
 
   useEffect(() => {
     if (!games.length) return;
 
-    const ids = new Set(games.map((g) => g.id));
-
+    const gameIdSet = new Set(games.map(g => g.id));
     const chan = supabase
-      .channel('games-live')
+      .channel('live-games')
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'games' },
         (payload: RealtimePostgresChangesPayload<GameRow>) => {
-          const row = payload.new as Partial<GameRow>;
-          if (!row || typeof row.id !== 'number' || !ids.has(row.id)) return;
-          setGames((prev) => prev.map((g) => (g.id === row.id ? { ...g, ...row } as GameRow : g)));
+          const rowUnknown = payload.new as unknown;
+          if (!isGameUpdate(rowUnknown) || !rowUnknown.id || !gameIdSet.has(rowUnknown.id)) return;
+
+          setGames(prev =>
+            prev.map(g => (g.id === rowUnknown.id ? ({ ...g, ...rowUnknown } as GameRow) : g))
+          );
         }
       )
       .subscribe();
@@ -233,7 +297,7 @@ export default function ScoreboardPage() {
     };
   }, [games]);
 
-  /* ------------------------------ derived maps ---------------------------- */
+  /* ------------------------------ derived maps ----------------------------- */
 
   const gameByPair = useMemo(() => {
     const m = new Map<string, GameRow>();
@@ -242,29 +306,28 @@ export default function ScoreboardPage() {
   }, [games]);
 
   const picksByPlayer = useMemo(() => {
-    const m = new Map<string, SpreadPickAdminRow[]>();
-    for (const name of playersOrdered) m.set(name, []);
+    const m = new Map<string, SpreadPickRow[]>();
+    for (const name of PLAYERS_ORDERED) m.set(name, []);
     for (const p of spreadPicks) {
-      const key = p.player ?? 'Unknown';
+      const key = p.player_display_name ?? 'Unknown';
       if (!m.has(key)) m.set(key, []);
       m.get(key)!.push(p);
     }
     for (const [, arr] of m) arr.sort((a, b) => (a.pick_number ?? 0) - (b.pick_number ?? 0));
     return m;
-  }, [playersOrdered, spreadPicks]);
+  }, [spreadPicks]);
 
   const ouByPlayer = useMemo(() => {
-    const m = new Map<string, OuPickAdminRow | null>();
-    for (const name of playersOrdered) m.set(name, null);
-    for (const r of ouPicks) m.set(r.player, r);
+    const m = new Map<string, OuPickRow | null>();
+    for (const name of PLAYERS_ORDERED) m.set(name, null);
+    for (const r of ouPicks) m.set(r.player_display_name, r);
     return m;
-  }, [playersOrdered, ouPicks]);
+  }, [ouPicks]);
 
   /* -------------------------------- render -------------------------------- */
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-8">
-      {/* header */}
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Week {week} Scoreboard</h1>
         <div className="flex items-center gap-6">
@@ -275,120 +338,129 @@ export default function ScoreboardPage() {
               value={week}
               onChange={(e) => setWeek(parseInt(e.target.value, 10))}
             >
-              {weeks.map((w) => (
-                <option key={w} value={w}>
-                  Week {w}
-                </option>
+              {weeks.map(w => (
+                <option key={w} value={w}>Week {w}</option>
               ))}
             </select>
           </div>
+
           <label className="text-sm flex items-center gap-2 select-none">
-            <input type="checkbox" checked={showBoard} onChange={(e) => setShowBoard(e.target.checked)} />
-            Show full scoreboard
-          </label>
+  <input
+    type="checkbox"
+    checked={showBoard}
+    onChange={(e) => setShowBoard(e.target.checked)}
+  />
+  Show full scoreboard
+</label>
+
         </div>
       </header>
 
-      {/* PICKS grouped by player */}
+      {/* ------------------------------- PICKS ------------------------------- */}
       <section className="space-y-3">
         <h2 className="text-lg font-medium">Picks</h2>
 
-        {playersOrdered.map((player) => {
-          const rows = picksByPlayer.get(player) ?? [];
-          return (
-            <div key={player} className="border rounded p-4">
-              <div className="font-semibold mb-3">{player}</div>
+        {loading ? (
+          <div className="text-sm text-zinc-400">Loading…</div>
+        ) : (
+          PLAYERS_ORDERED.map(player => {
+            const rows = picksByPlayer.get(player) ?? [];
+            return (
+              <div key={player} className="border rounded p-4">
+                <div className="font-semibold mb-3">{player}</div>
 
-              {rows.length === 0 ? (
-                <div className="text-sm text-zinc-400">No picks</div>
-              ) : (
-                <div className="space-y-2">
-                  {rows.map((r) => {
-                    const g = gameByPair.get(`${r.home_short}-${r.away_short}`);
-                    const outcome = pickOutcomeATS(g, r.team_short, r.spread_at_pick ?? null);
+                {rows.length === 0 ? (
+                  <div className="text-sm text-zinc-400">No picks</div>
+                ) : (
+                  <div className="space-y-2">
+                    {rows.map((r, idx) => {
+                      const pairKey = `${r.home_short}-${r.away_short}`;
+                      const g = gameByPair.get(pairKey);
+                      const outcome = pickOutcomeATS(g, r.team_short, r.spread);
 
-                    return (
-                      <div key={r.pick_id} className="flex items-center justify-between">
-                        {/* left: logos + matchup + picked team */}
-                        <div className="flex items-center gap-2">
-                          <TinyLogo url={teamLogo(r.home_short)} alt={r.home_short} />
-                          <TinyLogo url={teamLogo(r.away_short)} alt={r.away_short} />
-                          <span className="text-zinc-300 text-sm">
-                            {r.home_short} v {r.away_short}
-                          </span>
-                          <span className="ml-3">Pick: {r.team_short}</span>
-                          <span className="ml-2 text-zinc-400 text-sm">{signed(r.spread_at_pick)}</span>
+                      return (
+                        <div key={`${player}-${idx}`} className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <TinyLogo url={teamLogo(r.team_short)} alt={r.team_short} />
+                            <span className="w-14">{r.team_short}</span>
+                            <span className="text-zinc-400 text-sm">
+                              ({matchup(r.home_short, r.away_short)})
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-4">
+                            <span className="w-10 text-right">{signed(r.spread)}</span>
+                            <StatusPill outcome={outcome} />
+                          </div>
                         </div>
-
-                        {/* right: score + status */}
-                        <div className="flex items-center gap-4">
-                          <ScoreText g={g} />
-                          <StatusPill outcome={outcome} />
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })
+        )}
       </section>
 
-      {/* O/U TIE-BREAKERS */}
+      {/* ---------------------------- O/U TIE-BREAKERS ---------------------------- */}
       <section className="space-y-3">
         <h2 className="text-lg font-medium">O/U Tie-breakers</h2>
-        {playersOrdered.map((name) => {
+
+        {PLAYERS_ORDERED.map(name => {
           const r = ouByPlayer.get(name) || null;
           if (!r) {
             return (
               <div key={name} className="border rounded p-3 text-sm text-zinc-400">
-                {name}: (no pick)
+                {name}
               </div>
             );
           }
+
           const g = gameByPair.get(`${r.home_short}-${r.away_short}`);
-          const outcome = pickOutcomeOU(g, r.pick_side, r.total_at_pick);
+          const outcome = pickOutcomeOU(g, r.ou_choice, r.ou_total);
 
           return (
             <div key={name} className="border rounded p-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                {/* exactly two logos (home & away), not duplicated */}
                 <TinyLogo url={teamLogo(r.home_short)} alt={r.home_short} />
                 <TinyLogo url={teamLogo(r.away_short)} alt={r.away_short} />
                 <span className="mr-2">{name}</span>
-                <span className="text-zinc-300">
-                  {r.home_short} v {r.away_short}
-                </span>
-                <span className="ml-3">{r.pick_side}</span>
-                <span className="ml-1">{r.total_at_pick}</span>
+                <span className="text-zinc-300">{matchup(r.home_short, r.away_short)}</span>
+                <span className="ml-3">{r.ou_choice}</span>
+                <span className="ml-1">{r.ou_total}</span>
               </div>
-
-              <div className="flex items-center gap-4">
-                <ScoreText g={g} />
-                <StatusPill outcome={outcome} />
-              </div>
+              <StatusPill outcome={outcome} />
             </div>
           );
         })}
       </section>
 
-      {/* FULL SCOREBOARD (optional) */}
+      {/* --------------------------- FULL SCOREBOARD --------------------------- */}
       {showBoard && (
         <section className="space-y-2">
           <h2 className="text-lg font-medium">All Games</h2>
-          {games.map((g) => (
-            <div key={g.id} className="border rounded p-2 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <TinyLogo url={teamLogo(g.home)} alt={g.home} />
-                <span className="w-10">{g.home}</span>
-                <span className="text-sm text-zinc-500">v</span>
-                <TinyLogo url={teamLogo(g.away)} alt={g.away} />
-                <span className="w-10">{g.away}</span>
+          {games.map(g => {
+            const hasFinal = g.home_score != null && g.away_score != null;
+            const hasLive  = g.live_home_score != null && g.live_away_score != null;
+            const home = hasFinal ? g.home_score : hasLive ? g.live_home_score : null;
+            const away = hasFinal ? g.away_score : hasLive ? g.live_away_score : null;
+
+            return (
+              <div key={g.id} className="border rounded p-2 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <TinyLogo url={teamLogo(g.home)} alt={g.home} />
+                  <span className="w-10">{g.home}</span>
+                  <span className="text-sm text-zinc-500">v</span>
+                  <TinyLogo url={teamLogo(g.away)} alt={g.away} />
+                  <span className="w-10">{g.away}</span>
+                </div>
+                <div className="tabular-nums">
+                  {home != null && away != null ? `${home} — ${away}` : '— —'}
+                </div>
               </div>
-              <ScoreText g={g} />
-            </div>
-          ))}
+            );
+          })}
         </section>
       )}
     </div>
