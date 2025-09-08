@@ -20,8 +20,8 @@ const LOGO_BASE =
 type BoardRow = {
   home_short: string;
   away_short: string;
-  fav_short: string | null; // favourite team short, null => PK
-  spread: number | null;    // signed for the favourite (e.g., -3.5)
+  home_line: number; // signed relative to the home team (negative = home fav)
+  away_line: number; // signed relative to the away team (negative = away fav)
   total: number | null;
 };
 
@@ -34,7 +34,7 @@ type PickTableRow = {
   team_short: string;
   home_short: string;
   away_short: string;
-  spread_at_pick: number | null;
+  spread_at_pick: number | null; // signed for the team picked
   total_at_pick: number | null;
   created_at: string | null;
 };
@@ -63,20 +63,14 @@ function fmtSigned(n: number): string {
   if (n === 0) return 'Pick Em';
   return n > 0 ? `+${n}` : `${n}`;
 }
-// line each side based on favourite + spread
-function lineForTeam(team: string, fav: string | null, spread: number | null): number {
-  if (spread == null || fav == null) return 0;
-  return team === fav ? spread : -spread;
-}
 
 /* ---------------------------- snake order logic -------------------------- */
 function onClockName(totalPicksSoFar: number, week: number): string {
   const n = PLAYERS.length;
-  const start = (week - 1) % n;             // rotate weekly
+  const start = (week - 1) % n;             // rotate weekly (Week 1 starts PLAYERS[0])
   const round = Math.floor(totalPicksSoFar / n);
   const idxInRound = totalPicksSoFar % n;
   const forward = round % 2 === 0;
-
   const offset = forward ? idxInRound : n - 1 - idxInRound;
   const playerIdx = (start + offset) % n;
   return PLAYERS[playerIdx]!;
@@ -112,30 +106,59 @@ export default function DraftPage() {
   /* load board */
   async function loadBoard(w: number) {
     const { data } = await supabase.rpc('get_week_draft_board', { p_year: YEAR, p_week: w });
-    const raw: unknown[] = Array.isArray(data) ? (data as unknown[]) : [];
+    const rows: unknown[] = Array.isArray(data) ? (data as unknown[]) : [];
 
-    const mapped: BoardRow[] = raw.map((r) => {
+    const mapped: BoardRow[] = rows.map((r) => {
       const o = asRec(r);
+      const home = toStr(o.home_short);
+      const away = toStr(o.away_short);
 
-      // Accept many possible column names for favourite
-      let favShort =
-        toStr(o.fav_short, '') ||
-        toStr(o.fav, '') ||
-        toStr(o.fav_team_short, '') ||
-        toStr(o.fav_team, '') ||
-        toStr(o.favorite_short, '') ||
-        toStr(o.favorite, '') ||
-        toStr(o.favourite_short, '') ||
-        toStr(o.favourite, '');
+      // Try to read explicit team lines first
+      let hLine =
+        toNumOrNull(o.home_line) ??
+        toNumOrNull(o.home_spread) ??
+        toNumOrNull(o.spread_home);
+      let aLine =
+        toNumOrNull(o.away_line) ??
+        toNumOrNull(o.away_spread) ??
+        toNumOrNull(o.spread_away);
 
-      favShort = favShort.toUpperCase();
-      if (favShort === 'PK' || favShort === '') favShort = '';
+      // If explicit per-team lines are absent, try (fav + spread)
+      if (hLine == null || aLine == null) {
+        const spread = toNumOrNull(o.spread);
+        let fav =
+          toStr(o.fav_short, '') ||
+          toStr(o.fav, '') ||
+          toStr(o.fav_team_short, '') ||
+          toStr(o.fav_team, '') ||
+          toStr(o.favorite_short, '') ||
+          toStr(o.favorite, '') ||
+          toStr(o.favourite_short, '') ||
+          toStr(o.favourite, '');
+        fav = fav.toUpperCase();
+
+        if (spread != null && spread !== 0 && fav) {
+          if (fav === home) {
+            hLine = spread;
+            aLine = -spread;
+          } else if (fav === away) {
+            hLine = -spread;
+            aLine = spread;
+          }
+        }
+      }
+
+      // Last resort: Pick'em
+      if (hLine == null || aLine == null) {
+        hLine = 0;
+        aLine = 0;
+      }
 
       return {
-        home_short: toStr(o.home_short),
-        away_short: toStr(o.away_short),
-        fav_short: favShort || null,
-        spread: toNumOrNull(o.spread),
+        home_short: home,
+        away_short: away,
+        home_line: hLine,
+        away_line: aLine,
         total: toNumOrNull(o.total),
       };
     });
@@ -154,8 +177,8 @@ export default function DraftPage() {
       .eq('week_number', w)
       .order('pick_number', { ascending: true });
 
-    const rows: unknown[] = Array.isArray(data) ? (data as unknown[]) : [];
-    const mapped: PickTableRow[] = rows.map((r) => {
+    const arr: unknown[] = Array.isArray(data) ? (data as unknown[]) : [];
+    const mapped: PickTableRow[] = arr.map((r) => {
       const o = asRec(r);
       return {
         id: toNumOrNull(o.id) ?? 0,
@@ -187,23 +210,24 @@ export default function DraftPage() {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'picks' },
         (payload: RealtimePostgresChangesPayload<PickTableRow>) => {
-          const o = asRec(payload.new as unknown);
-          const y = toNumOrNull(o.season_year) ?? YEAR;
-          const w = toNumOrNull(o.week_number) ?? week;
+          const o = payload.new as unknown;
+          const rowObj = asRec(o);
+          const y = toNumOrNull(rowObj.season_year) ?? YEAR;
+          const w = toNumOrNull(rowObj.week_number) ?? week;
           if (y !== YEAR || w !== week) return;
 
           const row: PickTableRow = {
-            id: toNumOrNull(o.id) ?? 0,
+            id: toNumOrNull(rowObj.id) ?? 0,
             season_year: y,
             week_number: w,
-            pick_number: toNumOrNull(o.pick_number) ?? 0,
-            player_display_name: toStr(o.player_display_name),
-            team_short: toStr(o.team_short),
-            home_short: toStr(o.home_short),
-            away_short: toStr(o.away_short),
-            spread_at_pick: toNumOrNull(o.spread_at_pick),
-            total_at_pick: toNumOrNull(o.total_at_pick),
-            created_at: toStr(o.created_at, null as unknown as string),
+            pick_number: toNumOrNull(rowObj.pick_number) ?? 0,
+            player_display_name: toStr(rowObj.player_display_name),
+            team_short: toStr(rowObj.team_short),
+            home_short: toStr(rowObj.home_short),
+            away_short: toStr(rowObj.away_short),
+            spread_at_pick: toNumOrNull(rowObj.spread_at_pick),
+            total_at_pick: toNumOrNull(rowObj.total_at_pick),
+            created_at: toStr(rowObj.created_at, null as unknown as string),
           };
           setPicks((p) => [...p, row].sort((a, b) => a.pick_number - b.pick_number));
         },
@@ -218,23 +242,21 @@ export default function DraftPage() {
   const onClock = onClockName(totalPicksSoFar, week);
   const isMyTurn = myName != null && onClock === myName;
 
-  /* UI helpers */
-  function GameRowView({ row }: { row: BoardRow }) {
-    const hLine = lineForTeam(row.home_short, row.fav_short, row.spread);
-    const aLine = lineForTeam(row.away_short, row.fav_short, row.spread);
+  /* UI bits */
+
+  function GameRow({ row }: { row: BoardRow }) {
     return (
       <div className="flex items-center justify-between px-3 py-2">
         <div className="flex items-center gap-2">
           <img src={teamLogo(row.home_short) || ''} alt={row.home_short} className="w-4 h-4 rounded-sm" />
           <span className="w-8 font-semibold">{row.home_short}</span>
-          <span className="ml-1 text-xs text-zinc-400">{fmtSigned(hLine)}</span>
+          <span className="ml-1 text-xs text-zinc-400">{fmtSigned(row.home_line)}</span>
           <span className="text-zinc-500 mx-2">v</span>
           <img src={teamLogo(row.away_short) || ''} alt={row.away_short} className="w-4 h-4 rounded-sm" />
           <span className="w-8 font-semibold">{row.away_short}</span>
-          <span className="ml-1 text-xs text-zinc-400">{fmtSigned(aLine)}</span>
+          <span className="ml-1 text-xs text-zinc-400">{fmtSigned(row.away_line)}</span>
         </div>
         <div className="flex items-center gap-3">
-          {/* Spread column removed by request */}
           <span className="w-12 text-right tabular-nums">{row.total ?? '—'}</span>
         </div>
       </div>
@@ -243,6 +265,9 @@ export default function DraftPage() {
 
   async function makePick(row: BoardRow, team_short: string) {
     if (!isMyTurn) return;
+    const teamLine =
+      team_short === row.home_short ? row.home_line : row.away_line;
+
     await supabase.from('picks').insert([
       {
         season_year: YEAR,
@@ -252,13 +277,14 @@ export default function DraftPage() {
         team_short,
         home_short: row.home_short,
         away_short: row.away_short,
-        spread_at_pick: row.spread,
+        spread_at_pick: teamLine, // store line for the side chosen
         total_at_pick: row.total,
       },
     ]);
   }
 
   /* render */
+
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
       <header className="flex items-center justify-between">
@@ -288,7 +314,7 @@ export default function DraftPage() {
         <div className="divide-y divide-zinc-800/60">
           {board.map((r, i) => (
             <div key={`${r.home_short}-${r.away_short}-${i}`}>
-              <GameRowView row={r} />
+              <GameRow row={r} />
             </div>
           ))}
         </div>
@@ -311,41 +337,37 @@ export default function DraftPage() {
         </div>
 
         <div className="grid md:grid-cols-2 gap-3">
-          {board.map((r) => {
-            const hLine = lineForTeam(r.home_short, r.fav_short, r.spread);
-            const aLine = lineForTeam(r.away_short, r.fav_short, r.spread);
-            return (
-              <div key={`${r.home_short}-${r.away_short}`} className="border rounded p-3 flex flex-col gap-2">
-                <div className="flex items-center gap-2">
-                  <img src={teamLogo(r.home_short) || ''} alt={r.home_short} className="w-4 h-4" />
-                  <span className="font-semibold">{r.home_short}</span>
-                  <span className="text-xs text-zinc-400 ml-1">{fmtSigned(hLine)}</span>
-                  <span className="text-zinc-500 mx-2">v</span>
-                  <img src={teamLogo(r.away_short) || ''} alt={r.away_short} className="w-4 h-4" />
-                  <span className="font-semibold">{r.away_short}</span>
-                  <span className="text-xs text-zinc-400 ml-1">{fmtSigned(aLine)}</span>
-                  <span className="ml-3 text-xs text-zinc-500">/ {r.total ?? '—'}</span>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                    disabled={!isMyTurn}
-                    onClick={() => makePick(r, r.home_short)}
-                  >
-                    Pick {r.home_short} ({fmtSigned(hLine)})
-                  </button>
-                  <button
-                    className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                    disabled={!isMyTurn}
-                    onClick={() => makePick(r, r.away_short)}
-                  >
-                    Pick {r.away_short} ({fmtSigned(aLine)})
-                  </button>
-                </div>
+          {board.map((r) => (
+            <div key={`${r.home_short}-${r.away_short}`} className="border rounded p-3 flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <img src={teamLogo(r.home_short) || ''} alt={r.home_short} className="w-4 h-4" />
+                <span className="font-semibold">{r.home_short}</span>
+                <span className="text-xs text-zinc-400 ml-1">{fmtSigned(r.home_line)}</span>
+                <span className="text-zinc-500 mx-2">v</span>
+                <img src={teamLogo(r.away_short) || ''} alt={r.away_short} className="w-4 h-4" />
+                <span className="font-semibold">{r.away_short}</span>
+                <span className="text-xs text-zinc-400 ml-1">{fmtSigned(r.away_line)}</span>
+                <span className="ml-3 text-xs text-zinc-500">/ {r.total ?? '—'}</span>
               </div>
-            );
-          })}
+
+              <div className="flex items-center gap-2">
+                <button
+                  className="border rounded px-2 py-1 text-sm disabled:opacity-40"
+                  disabled={!isMyTurn}
+                  onClick={() => makePick(r, r.home_short)}
+                >
+                  Pick {r.home_short} ({fmtSigned(r.home_line)})
+                </button>
+                <button
+                  className="border rounded px-2 py-1 text-sm disabled:opacity-40"
+                  disabled={!isMyTurn}
+                  onClick={() => makePick(r, r.away_short)}
+                >
+                  Pick {r.away_short} ({fmtSigned(r.away_line)})
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       </section>
     </div>
