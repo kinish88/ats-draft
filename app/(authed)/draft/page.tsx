@@ -32,8 +32,6 @@ type PickTableRow = {
   pick_number: number;
   player_display_name: string;
   team_short: string;
-  home_short: string;
-  away_short: string;
   spread_at_pick: number | null; // signed for the team picked
   total_at_pick: number | null;
   created_at: string | null;
@@ -46,7 +44,6 @@ type SafeRec = Record<string, unknown>;
 function toStr(x: unknown, fb = ''): string {
   return typeof x === 'string' ? x : x == null ? fb : String(x);
 }
-
 function toNumOrNull(x: unknown): number | null {
   if (x == null) return null;
   if (typeof x === 'number') return Number.isFinite(x) ? x : null;
@@ -58,21 +55,17 @@ function toNumOrNull(x: unknown): number | null {
   }
   return null;
 }
-
 function asRec(x: unknown): SafeRec {
   return (x && typeof x === 'object' ? (x as SafeRec) : {}) as SafeRec;
 }
-
 function teamLogo(short?: string | null): string | null {
   if (!short) return null;
   return LOGO_BASE ? `${LOGO_BASE}/${short}.png` : `/teams/${short}.png`;
 }
-
 function fmtSigned(n: number): string {
   if (n === 0) return 'Pick Em';
   return n > 0 ? `+${n}` : `${n}`;
 }
-
 const norm = (s: string | null | undefined) => (s ?? '').trim().toLowerCase();
 
 /* ---------------------------- snake order logic -------------------------- */
@@ -125,7 +118,7 @@ export default function DraftPage() {
       const home = toStr(o.home_short).toUpperCase();
       const away = toStr(o.away_short).toUpperCase();
 
-      // Try explicit per-team fields first (support multiple possible names)
+      // Prefer explicit per-team fields if available
       let hLine =
         toNumOrNull(o.home_line) ??
         toNumOrNull(o.home_spread) ??
@@ -138,9 +131,7 @@ export default function DraftPage() {
         toNumOrNull(o.spread_away) ??
         toNumOrNull(o.line_away);
 
-      // If explicit team lines missing, derive from a single 'spread' field.
-      // Your SQL shows a numeric spread that is **home-signed**:
-      //   e.g. GB home with -3.5 => home_line = -3.5, away_line = +3.5
+      // Fallback: derive from single home-signed 'spread'
       if (hLine == null || aLine == null) {
         const s = toNumOrNull(o.spread);
         if (s != null) {
@@ -149,13 +140,11 @@ export default function DraftPage() {
         }
       }
 
-      // Last resort: pick'em
       if (hLine == null || aLine == null) {
         hLine = 0;
         aLine = 0;
       }
 
-      // Total (allow 'total' or 'total_line')
       const tot = toNumOrNull(o.total) ?? toNumOrNull(o.total_line);
 
       return {
@@ -170,12 +159,12 @@ export default function DraftPage() {
     setBoard(mapped);
   }
 
-  /* load picks */
+  /* load picks (only columns that exist in your table) */
   async function loadPicks(w: number) {
     const { data } = await supabase
       .from('picks')
       .select(
-        'id, season_year, week_number, pick_number, player_display_name, team_short, home_short, away_short, spread_at_pick, total_at_pick, created_at',
+        'id, season_year, week_number, pick_number, player_display_name, team_short, spread_at_pick, total_at_pick, created_at',
       )
       .eq('season_year', YEAR)
       .eq('week_number', w)
@@ -191,8 +180,6 @@ export default function DraftPage() {
         pick_number: toNumOrNull(o.pick_number) ?? 0,
         player_display_name: toStr(o.player_display_name),
         team_short: toStr(o.team_short),
-        home_short: toStr(o.home_short),
-        away_short: toStr(o.away_short),
         spread_at_pick: toNumOrNull(o.spread_at_pick),
         total_at_pick: toNumOrNull(o.total_at_pick),
         created_at: toStr(o.created_at, null as unknown as string),
@@ -226,8 +213,6 @@ export default function DraftPage() {
             pick_number: toNumOrNull(rowObj.pick_number) ?? 0,
             player_display_name: toStr(rowObj.player_display_name),
             team_short: toStr(rowObj.team_short),
-            home_short: toStr(rowObj.home_short),
-            away_short: toStr(rowObj.away_short),
             spread_at_pick: toNumOrNull(rowObj.spread_at_pick),
             total_at_pick: toNumOrNull(rowObj.total_at_pick),
             created_at: toStr(rowObj.created_at, null as unknown as string),
@@ -283,8 +268,6 @@ export default function DraftPage() {
         pick_number: totalPicksSoFar + 1,
         player_display_name: myName,
         team_short,
-        home_short: row.home_short,
-        away_short: row.away_short,
         spread_at_pick: teamLine, // store the team-specific number
         total_at_pick: row.total,
       };
@@ -296,8 +279,6 @@ export default function DraftPage() {
         .single();
 
       if (error) {
-        // Surface the exact reason (RLS, constraint, etc.)
-        // eslint-disable-next-line no-alert
         alert(`Could not place pick: ${error.message}`);
         return;
       }
@@ -311,8 +292,6 @@ export default function DraftPage() {
           pick_number: toNumOrNull(d.pick_number) ?? totalPicksSoFar + 1,
           player_display_name: toStr(d.player_display_name),
           team_short: toStr(d.team_short),
-          home_short: toStr(d.home_short),
-          away_short: toStr(d.away_short),
           spread_at_pick: toNumOrNull(d.spread_at_pick),
           total_at_pick: toNumOrNull(d.total_at_pick),
           created_at: toStr(d.created_at, null as unknown as string),
@@ -321,7 +300,6 @@ export default function DraftPage() {
       }
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      // eslint-disable-next-line no-alert
       alert(`Could not place pick: ${msg}`);
     } finally {
       setSubmittingKey(null);
