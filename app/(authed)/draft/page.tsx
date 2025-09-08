@@ -1,33 +1,29 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
-
-/* ------------------------------ configuration ------------------------------ */
 
 const YEAR = 2025;
 const PLAYERS: readonly string[] = ['Big Dawg', 'Pud', 'Kinish'] as const;
 const LOGO_BASE =
   (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/, '') || null;
 
-/* ---------------------------------- types ---------------------------------- */
-
 type WeekRow = { week_number: number };
 
 type DraftBoardRpcRow = {
   home_short?: unknown;
   away_short?: unknown;
-  fav_short?: unknown; // some installs return this…
-  fav?: unknown;       // …yours returns this
-  spread?: unknown;
+  fav_short?: unknown; // some DBs
+  fav?: unknown;       // others
+  spread?: unknown;    // number, home-line convention
   total?: unknown;
 };
 
 type BoardRow = {
   home: string;
   away: string;
-  fav: string | null;        // short code of favourite
+  fav: string | null;        // short of favourite
   spread: number | null;
   total: number | null;
 };
@@ -46,14 +42,11 @@ type PickTableRow = {
   created_at: string;
 };
 
-/* --------------------------------- helpers --------------------------------- */
-
 function teamLogo(short?: string | null) {
   if (!short) return null;
   return LOGO_BASE ? `${LOGO_BASE}/${short}.png` : `/teams/${short}.png`;
 }
 
-// Render “Pick'em” when spread is 0
 function spreadText(n: number | null | undefined) {
   if (n == null) return '—';
   const x = Number(n);
@@ -68,7 +61,6 @@ function asNum(x: unknown): number | null {
   const n = Number(x);
   return Number.isFinite(n) ? n : null;
 }
-
 function asStr(x: unknown): string {
   return typeof x === 'string' ? x : x == null ? '' : String(x);
 }
@@ -85,30 +77,26 @@ function TinyLogo({ s, alt }: { s: string | null; alt: string }) {
   );
 }
 
-/* ---------------------------------- page ----------------------------------- */
-
 export default function DraftPage() {
   const [week, setWeek] = useState<number>(2);
   const [weeks, setWeeks] = useState<number[]>([]);
   const [board, setBoard] = useState<BoardRow[]>([]);
   const [picks, setPicks] = useState<PickTableRow[]>([]);
-  const [onClockIdx, setOnClockIdx] = useState<number>(0); // 0..PLAYERS.length-1
-
-  /* ------------------------------- load weeks ------------------------------- */
+  const [onClockIdx, setOnClockIdx] = useState<number>(0);
 
   useEffect(() => {
     (async () => {
       const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
       const rows: WeekRow[] = Array.isArray(data)
         ? (data as unknown[]).flatMap((r) =>
-            typeof (r as any)?.week_number === 'number' ? [{ week_number: (r as any).week_number as number }] : []
+            typeof (r as any)?.week_number === 'number'
+              ? [{ week_number: (r as any).week_number as number }]
+              : []
           )
         : [];
       setWeeks(rows.length ? rows.map((r) => r.week_number) : Array.from({ length: 18 }, (_, i) => i + 1));
     })();
   }, []);
-
-  /* ----------------------------- load draft board --------------------------- */
 
   const loadBoard = async (w: number) => {
     const { data } = await supabase.rpc('get_week_draft_board', {
@@ -119,20 +107,27 @@ export default function DraftPage() {
     const rows = Array.isArray(data) ? (data as DraftBoardRpcRow[]) : [];
 
     const mapped: BoardRow[] = rows.map((r) => {
-      const fav =
+      const home = asStr(r.home_short);
+      const away = asStr(r.away_short);
+      const spread = asNum(r.spread);
+      const total = asNum(r.total);
+
+      // 1) use fav field if present
+      let fav =
         typeof r.fav_short === 'string'
           ? (r.fav_short as string)
           : typeof r.fav === 'string'
           ? (r.fav as string)
           : null;
 
-      return {
-        home: asStr(r.home_short),
-        away: asStr(r.away_short),
-        fav,
-        spread: asNum(r.spread),
-        total: asNum(r.total),
-      };
+      // 2) derive from spread sign if missing
+      if (!fav && spread != null) {
+        if (spread < 0) fav = home;       // home-line negative => home fav
+        else if (spread > 0) fav = away;  // home-line positive => away fav
+        else fav = null;                   // pick'em
+      }
+
+      return { home, away, fav, spread, total };
     });
 
     setBoard(mapped);
@@ -150,18 +145,13 @@ export default function DraftPage() {
 
     const arr = Array.isArray(data) ? (data as PickTableRow[]) : [];
     setPicks(arr);
-
-    // simple rotation
-    const taken = arr.length % PLAYERS.length;
-    setOnClockIdx(taken);
+    setOnClockIdx(arr.length % PLAYERS.length);
   };
 
   useEffect(() => {
     loadBoard(week);
     loadPicks(week);
   }, [week]);
-
-  /* ------------------------------ realtime picks ---------------------------- */
 
   useEffect(() => {
     const channel = supabase
@@ -171,17 +161,12 @@ export default function DraftPage() {
         { event: '*', schema: 'public', table: 'picks' },
         (payload: RealtimePostgresChangesPayload<PickTableRow>) => {
           const row = payload.new;
-          if (!row || row.season_year !== YEAR || row.week_number !== week) {
-            return;
-          }
+          if (!row || row.season_year !== YEAR || row.week_number !== week) return;
           setPicks((prev) => {
             const byId = new Map(prev.map((p) => [p.id, p]));
             byId.set(row.id, row);
-            return Array.from(byId.values()).sort(
-              (a, b) => a.pick_number - b.pick_number
-            );
+            return Array.from(byId.values()).sort((a, b) => a.pick_number - b.pick_number);
           });
-
           setOnClockIdx((i) => (i + 1) % PLAYERS.length);
         }
       )
@@ -191,8 +176,6 @@ export default function DraftPage() {
       supabase.removeChannel(channel);
     };
   }, [week]);
-
-  /* ------------------------------ pick handling ----------------------------- */
 
   const currentPlayer = PLAYERS[onClockIdx] || PLAYERS[0];
 
@@ -213,11 +196,8 @@ export default function DraftPage() {
     });
   };
 
-  /* -------------------------------- render --------------------------------- */
-
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
-      {/* header */}
       <header className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Draft Board</h1>
         <div className="flex items-center gap-2">
@@ -236,7 +216,6 @@ export default function DraftPage() {
         </div>
       </header>
 
-      {/* board table */}
       <section>
         <p className="text-xs opacity-70 mb-2">
           Showing <em>current market</em> numbers from <code>game_lines</code>. Picks store the line at pick-time.
@@ -250,15 +229,10 @@ export default function DraftPage() {
           </div>
           <div className="divide-y">
             {board.map((r) => (
-              <div
-                key={`${r.home}-${r.away}`}
-                className="grid grid-cols-[1fr_auto_auto] items-center px-3 py-2"
-              >
+              <div key={`${r.home}-${r.away}`} className="grid grid-cols-[1fr_auto_auto] items-center px-3 py-2">
                 <div className="flex items-center gap-2">
                   <TinyLogo s={teamLogo(r.home)} alt={r.home} />
-                  <span className={`w-10 ${r.fav === r.home ? 'font-semibold' : ''}`}>
-                    {r.home}
-                  </span>
+                  <span className={`w-10 ${r.fav === r.home ? 'font-semibold' : ''}`}>{r.home}</span>
                   {r.fav === r.home && (
                     <>
                       <span className="text-amber-400 ml-1">★</span>
@@ -267,9 +241,7 @@ export default function DraftPage() {
                   )}
                   <span className="mx-1 opacity-60">v</span>
                   <TinyLogo s={teamLogo(r.away)} alt={r.away} />
-                  <span className={`w-10 ${r.fav === r.away ? 'font-semibold' : ''}`}>
-                    {r.away}
-                  </span>
+                  <span className={`w-10 ${r.fav === r.away ? 'font-semibold' : ''}`}>{r.away}</span>
                   {r.fav === r.away && (
                     <>
                       <span className="text-amber-400 ml-1">★</span>
@@ -278,19 +250,14 @@ export default function DraftPage() {
                   )}
                 </div>
 
-                <div className="text-right tabular-nums">
-                  {spreadText(r.spread)}
-                </div>
-                <div className="text-right tabular-nums">
-                  {r.total == null ? '—' : r.total}
-                </div>
+                <div className="text-right tabular-nums">{spreadText(r.spread)}</div>
+                <div className="text-right tabular-nums">{r.total == null ? '—' : r.total}</div>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* live draft */}
       <section className="space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-lg font-medium">Live Draft</h2>
@@ -311,7 +278,6 @@ export default function DraftPage() {
           <span className="opacity-70">Pick #{picks.length + 1}</span>
         </div>
 
-        {/* picks list */}
         <div className="border rounded">
           <div className="px-3 py-2 text-sm opacity-70 border-b">Picks</div>
           {picks.length === 0 ? (
@@ -337,18 +303,12 @@ export default function DraftPage() {
           )}
         </div>
 
-        {/* pick cards */}
         <div className="grid md:grid-cols-2 gap-3">
           {board.map((g) => (
-            <div
-              key={`${g.home}-${g.away}`}
-              className="border rounded p-3 flex flex-col gap-2"
-            >
+            <div key={`${g.home}-${g.away}`} className="border rounded p-3 flex flex-col gap-2">
               <div className="flex items-center gap-2">
                 <TinyLogo s={teamLogo(g.home)} alt={g.home} />
-                <span className={`w-10 ${g.fav === g.home ? 'font-semibold' : ''}`}>
-                  {g.home}
-                </span>
+                <span className={`w-10 ${g.fav === g.home ? 'font-semibold' : ''}`}>{g.home}</span>
                 {g.fav === g.home && (
                   <>
                     <span className="text-amber-400 ml-1">★</span>
@@ -357,9 +317,7 @@ export default function DraftPage() {
                 )}
                 <span className="mx-1 opacity-60">v</span>
                 <TinyLogo s={teamLogo(g.away)} alt={g.away} />
-                <span className={`w-10 ${g.fav === g.away ? 'font-semibold' : ''}`}>
-                  {g.away}
-                </span>
+                <span className={`w-10 ${g.fav === g.away ? 'font-semibold' : ''}`}>{g.away}</span>
                 {g.fav === g.away && (
                   <>
                     <span className="text-amber-400 ml-1">★</span>
