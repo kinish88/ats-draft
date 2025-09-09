@@ -28,14 +28,11 @@ type BoardRow = {
 type PickTableRow = {
   id: number;
   season_year: number;
-  week_number?: number; // may be ignored by DB; kept for client state
   pick_number: number;
   player_display_name: string;
-  team_short?: string | null; // not stored in DB, for convenience only
   home_short: string;
   away_short: string;
-  spread_at_pick: number | null; // signed for the team picked
-  total_at_pick: number | null;
+  spread_at_pick: number | null;
   created_at: string | null;
 };
 
@@ -178,10 +175,9 @@ export default function DraftPage() {
     const { data } = await supabase
       .from('picks')
       .select(
-        'id, season_year, pick_number, player_display_name, home_short, away_short, spread_at_pick, total_at_pick, created_at'
+        'id, season_year, pick_number, player_display_name, home_short, away_short, spread_at_pick, created_at'
       )
       .eq('season_year', YEAR)
-      // If your DB also stores week_id only, it’s still fine to filter by season here
       .order('pick_number', { ascending: true });
 
     const arr: unknown[] = Array.isArray(data) ? (data as unknown[]) : [];
@@ -195,7 +191,6 @@ export default function DraftPage() {
         home_short: toStr(o.home_short),
         away_short: toStr(o.away_short),
         spread_at_pick: toNumOrNull(o.spread_at_pick),
-        total_at_pick: toNumOrNull(o.total_at_pick),
         created_at: toStr(o.created_at, null as unknown as string),
       };
     });
@@ -228,7 +223,6 @@ export default function DraftPage() {
             home_short: toStr(rowObj.home_short),
             away_short: toStr(rowObj.away_short),
             spread_at_pick: toNumOrNull(rowObj.spread_at_pick),
-            total_at_pick: toNumOrNull(rowObj.total_at_pick),
             created_at: toStr(rowObj.created_at, null as unknown as string),
           };
           setPicks((p) => [...p, row].sort((a, b) => a.pick_number - b.pick_number));
@@ -280,14 +274,13 @@ export default function DraftPage() {
     const { error } = await supabase.from('picks').insert([
       {
         season_year: YEAR,
-        week_number: week, // fine if DB ignores it
+        week_number: week, // harmless if DB ignores
         pick_number: totalPicksSoFar + 1,
         player_display_name: myName,
         team_id: teamId,
         home_short: row.home_short,
         away_short: row.away_short,
         spread_at_pick: teamLine,
-        total_at_pick: row.total,
       }
     ]);
 
