@@ -172,30 +172,30 @@ export default function DraftPage() {
 
   /* load picks */
   async function loadPicks(w: number) {
-    const { data } = await supabase
-      .from('picks')
-      .select(
-        'id, season_year, pick_number, player_display_name, home_short, away_short, spread_at_pick, created_at'
-      )
-      .eq('season_year', YEAR)
-      .order('pick_number', { ascending: true });
+  const { data } = await supabase
+    .from('picks')
+    .select(
+      'id, season_year, pick_number, player_display_name, team_short, home_short, away_short, spread_at_pick, created_at'
+    )
+    .eq('season_year', YEAR)
+    .order('pick_number', { ascending: true });
 
-    const arr: unknown[] = Array.isArray(data) ? (data as unknown[]) : [];
-    const mapped: PickTableRow[] = arr.map((r) => {
-      const o = asRec(r);
-      return {
-        id: toNumOrNull(o.id) ?? 0,
-        season_year: toNumOrNull(o.season_year) ?? YEAR,
-        pick_number: toNumOrNull(o.pick_number) ?? 0,
-        player_display_name: toStr(o.player_display_name),
-        home_short: toStr(o.home_short),
-        away_short: toStr(o.away_short),
-        spread_at_pick: toNumOrNull(o.spread_at_pick),
-        created_at: toStr(o.created_at, null as unknown as string),
-      };
-    });
-    setPicks(mapped);
-  }
+  const rows = Array.isArray(data) ? data : [];
+  setPicks(
+    rows.map((r) => ({
+      id: Number(r.id) || 0,
+      season_year: r.season_year ?? null,
+      pick_number: Number(r.pick_number) || 0,
+      player_display_name: String(r.player_display_name ?? ''),
+      team_short: r.team_short ?? null,
+      home_short: String(r.home_short ?? ''),
+      away_short: String(r.away_short ?? ''),
+      spread_at_pick: r.spread_at_pick ?? null,
+      created_at: r.created_at ?? null,
+    }))
+  );
+}
+
 
   useEffect(() => {
     loadBoard(week);
@@ -259,36 +259,28 @@ export default function DraftPage() {
     );
   }
 
-  async function makePick(row: BoardRow, team_short: string) {
-    if (!isMyTurn) return;
+async function makePick(row: BoardRow, team_short: string) {
+  if (!isMyTurn) return;
 
-    // look up team_id
-    const teamId = teamIdByShort[team_short] ?? null;
-    if (!teamId) {
-      alert(`Couldn't resolve team_id for ${team_short}`);
-      return;
-    }
+  const teamLine = team_short === row.home_short ? row.home_line : row.away_line;
 
-    const teamLine = team_short === row.home_short ? row.home_line : row.away_line;
+  const { error } = await supabase.from('picks').insert([
+    {
+      // DO NOT send week_number (your trigger sets week_id)
+      season_year: YEAR,
+      pick_number: totalPicksSoFar + 1,
+      player_display_name: myName,
+      team_short,
+      home_short: row.home_short,
+      away_short: row.away_short,
+      spread_at_pick: teamLine,
+      // DO NOT send total_at_pick (column doesn’t exist)
+    },
+  ]);
 
-    const { error } = await supabase.from('picks').insert([
-      {
-        season_year: YEAR,
-        week_number: week, // harmless if DB ignores
-        pick_number: totalPicksSoFar + 1,
-        player_display_name: myName,
-        team_id: teamId,
-        home_short: row.home_short,
-        away_short: row.away_short,
-        spread_at_pick: teamLine,
-      }
-    ]);
+  if (error) alert(`Could not place pick: ${error.message}`);
+}
 
-    if (error) {
-      console.error('pick insert error', error);
-      alert(`Could not place pick: ${error.message}`);
-    }
-  }
 
   /* render */
 
