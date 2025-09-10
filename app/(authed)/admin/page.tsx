@@ -93,6 +93,37 @@ export default function AdminScoresPage() {
   }, [router]);
 
   /** -------------------- Loaders -------------------- **/
+// …inside your Admin component file
+
+async function callAdminRefresh(kind: 'lines' | 'scores', year: number, week: number) {
+  const url = `/api/admin/refresh-${kind}?year=${year}&week=${week}`;
+  const res = await fetch(url, { method: 'POST' });
+  if (!res.ok) {
+    const txt = await res.text();
+    alert(`${kind} refresh failed: ${txt}`);
+    return;
+  }
+  const json = (await res.json()) as { updated?: number };
+  alert(`${kind} refreshed${json.updated != null ? ` (${json.updated} updated)` : ''}.`);
+}
+
+// …in JSX, beside your Week selector:
+<div className="flex items-center gap-2">
+  <button
+    className="border rounded px-2 py-1 text-sm"
+    onClick={() => callAdminRefresh('lines', 2025, week)}
+  >
+    Refresh lines
+  </button>
+  <button
+    className="border rounded px-2 py-1 text-sm"
+    onClick={() => callAdminRefresh('scores', 2025, week)}
+  >
+    Refresh scores
+  </button>
+</div>
+
+
   async function loadWeeks() {
     const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
     if (data) setWeeks((data as WeekOption[]).map(w => w.week_number));
