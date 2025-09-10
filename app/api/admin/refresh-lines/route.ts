@@ -142,7 +142,7 @@ export async function POST(req: Request) {
     const events = (await resp.json()) as unknown as OddsEvent[];
 
     // 6) Parse & upsert
-    let upserts: Array<{ game_id: number; fav_team_id: number | null; spread: number | null; total: number | null; source: string }> = [];
+    const upserts: Array<{ game_id: number; fav_team_id: number | null; spread: number | null; total: number | null; source: string }> = [];
 
     for (const ev of events) {
       const bk = first(ev.bookmakers) as OddsBookmaker | null;
