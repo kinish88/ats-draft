@@ -1,21 +1,33 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-export const runtime = 'nodejs';
+/**
+ * Minimal, lint-clean admin endpoint for scores.
+ * - Validates env
+ * - Confirms the week exists
+ * - Returns a stub response (no external calls)
+ */
 
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || '';
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
 
-function bad(status: number, message: string) {
-  return new NextResponse(message, { status });
+function assertEnv(): void {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
+    throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE');
+  }
 }
-function okJSON(body: unknown, status = 200) {
-  return NextResponse.json(body, { status });
+
+function readIntParam(req: NextRequest, name: string): number {
+  const raw = req.nextUrl.searchParams.get(name);
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) ? n : NaN;
 }
 
-async function getWeekId(supabaseAdmin: any, year: number, week: number): Promise<number> {
-  const { data, error } = await supabaseAdmin
+async function getWeekId(year: number, week: number): Promise<number> {
+  assertEnv();
+  const admin = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE!);
+
+  const { data, error } = await admin
     .from('weeks')
     .select('id')
     .eq('season_year', year)
@@ -23,35 +35,42 @@ async function getWeekId(supabaseAdmin: any, year: number, week: number): Promis
     .maybeSingle();
 
   if (error) throw error;
-  const id = typeof data?.id === 'number' ? data.id : null;
-  if (!id) throw new Error(`Week not found for ${year} wk ${week}`);
+
+  const id =
+    typeof data?.id === 'number'
+      ? (data.id as number)
+      : Number.isFinite(Number((data as Record<string, unknown> | null)?.id))
+      ? Number((data as Record<string, unknown>).id)
+      : NaN;
+
+  if (!Number.isFinite(id)) {
+    throw new Error(`Week not found for ${year} wk ${week}`);
+  }
   return id;
 }
 
-/**
- * POST /api/admin/refresh-scores?year=YYYY&week=#
- * For now this endpoint just exists and returns a stubbed response so your build succeeds.
- * When you’re ready to wire a scores provider, do it here and update the `games` table.
- */
 export async function POST(req: NextRequest) {
   try {
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
-      return bad(500, 'Server is missing SUPABASE_URL or SUPABASE_SERVICE_ROLE.');
+    const year = readIntParam(req, 'year');
+    const week = readIntParam(req, 'week');
+
+    if (!Number.isFinite(year) || !Number.isFinite(week)) {
+      return NextResponse.json(
+        { error: 'Invalid year or week query param' },
+        { status: 400 }
+      );
     }
 
-    const url = new URL(req.url);
-    const year = Number(url.searchParams.get('year') ?? '0');
-    const week = Number(url.searchParams.get('week') ?? '0');
-    if (!year || !week) return bad(400, 'Missing or invalid year/week.');
+    // Ensure the week exists (and env is valid)
+    await getWeekId(year, week);
 
-    // Ready for future: fetch scores and update games.home_score/away_score/is_final/is_live
-    // For now, just prove the route works:
-    const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
-    const weekId = await getWeekId(supabaseAdmin, year, week);
-
-    return okJSON({ updated: 0, note: 'Stubbed scores refresh completed.' });
+    // --- PLACEHOLDER FOR REAL IMPLEMENTATION ---
+    // When ready: fetch live/final scores and update `games`.
+    // For now, just return a stubbed success.
+    return NextResponse.json({ updated: 0, note: 'Stubbed scores refresh completed.' });
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return bad(500, msg);
+    const msg =
+      err instanceof Error ? err.message : 'Unknown error refreshing scores';
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
