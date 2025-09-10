@@ -1,5 +1,6 @@
 /* Refresh final/live scores for a given NFL week.
    Updates public.games(home_score, away_score, is_final, is_live) from The Odds API. */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';

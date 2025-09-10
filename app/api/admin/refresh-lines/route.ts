@@ -1,5 +1,6 @@
 /* Refresh betting lines (spreads + totals) for a given NFL week.
    Upserts into public.game_lines using The Odds API data. */
+/* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
