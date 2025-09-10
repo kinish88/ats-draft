@@ -71,7 +71,6 @@ function norm(s: string): string {
 
 function chooseBookmaker(bms: OddsBookmaker[]): OddsBookmaker | null {
   if (!bms.length) return null;
-  // prefer UK books if present, else DraftKings, else first
   const priority = ['skybet', 'williamhill', 'bet365', 'draftkings'];
   for (const key of priority) {
     const found = bms.find((b) => b.key === key);
@@ -85,7 +84,6 @@ function marketOf(book: OddsBookmaker, key: OddsMarketKey): OddsMarket | null {
 }
 
 function keyPair(a: string, b: string): string {
-  // order-insensitive key (full names)
   const A = norm(a);
   const B = norm(b);
   return A < B ? `${A}|${B}` : `${B}|${A}`;
@@ -94,7 +92,6 @@ function keyPair(a: string, b: string): string {
 /* ---------------------------- Supabase bits ---------------------------- */
 
 async function getWeekId(supabaseAdmin: ReturnType<typeof createClient>, year: number, week: number): Promise<number> {
-  // Explicitly type the result of maybeSingle to avoid TS inferring never
   const { data, error } = await supabaseAdmin
     .from('weeks')
     .select('id')
@@ -115,34 +112,37 @@ async function loadWeekGames(
   supabaseAdmin: ReturnType<typeof createClient>,
   weekId: number
 ): Promise<{ games: GameRow[]; teamsByName: Map<string, TeamRow> }> {
-  // Load teams (id -> full mapping)
+  // Load teams with explicit return type (prevents TS inferring never)
   const { data: teams, error: tErr } = await supabaseAdmin
     .from('teams')
-    .select('id,name,short_name');
+    .select('id,name,short_name')
+    .returns<TeamRow[]>();
 
   if (tErr) throw tErr;
 
   const byId = new Map<number, TeamRow>();
   const byName = new Map<string, TeamRow>();
   (teams ?? []).forEach((t) => {
-    const row: TeamRow = { id: t.id as number, name: String(t.name), short_name: String(t.short_name) };
+    const row: TeamRow = { id: t.id, name: t.name, short_name: t.short_name };
     byId.set(row.id, row);
     byName.set(norm(row.name), row);
   });
 
-  // Load games for the given week (use team ids, then map via teams table)
+  // Load games for the given week (then map via teams table)
+  type GameDB = { id: number; home_team_id: number; away_team_id: number };
   const { data: gRows, error: gErr } = await supabaseAdmin
     .from('games')
     .select('id, home_team_id, away_team_id')
-    .eq('week_id', weekId);
+    .eq('week_id', weekId)
+    .returns<GameDB[]>();
 
   if (gErr) throw gErr;
 
   const games: GameRow[] = (gRows ?? []).map((g) => {
-    const h = byId.get(g.home_team_id as number);
-    const a = byId.get(g.away_team_id as number);
+    const h = byId.get(g.home_team_id);
+    const a = byId.get(g.away_team_id);
     return {
-      game_id: g.id as number,
+      game_id: g.id,
       home_name: h?.name ?? '',
       home_short: h?.short_name ?? '',
       home_id: h?.id ?? 0,
@@ -174,13 +174,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ updated: 0, message: 'No games for this week' });
     }
 
-    // Build a quick lookup of our games by the pair of full names
     const byPair = new Map<string, GameRow>();
     for (const g of games) {
       byPair.set(keyPair(g.home_name, g.away_name), g);
     }
 
-    // Fetch odds (spreads + totals) from The Odds API (UK + US fallback)
+    // Fetch odds (spreads + totals)
     const params = new URLSearchParams({
       apiKey: ODDS_API_KEY!,
       regions: 'uk,us',
@@ -227,11 +226,10 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       let favSpread: number | null = null;
       let totalLine: number | null = null;
 
-      // spreads: two outcomes with team names + signed point (fav negative)
+      // spreads
       if (mSpreads && mSpreads.outcomes?.length) {
         const valid = mSpreads.outcomes.filter((o) => typeof o.point === 'number');
         if (valid.length >= 2) {
-          // Sort ascending by point (e.g., -7 < -3 < +3)
           valid.sort((a, b) => (a.point as number) - (b.point as number));
           const favOutcome = valid[0];
           const favName = norm(favOutcome.name);
@@ -243,19 +241,17 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         }
       }
 
-      // totals: outcomes are Over / Under with line in "point"
+      // totals
       if (mTotals && mTotals.outcomes?.length) {
-        const over = mTotals.outcomes.find((o) => norm(o.name) === 'OVER' || norm(o.name) === 'O');
-        const under = mTotals.outcomes.find((o) => norm(o.name) === 'UNDER' || norm(o.name) === 'U');
+        const over = mTotals.outcomes.find((o) => norm(String(o.name)) === 'OVER' || norm(String(o.name)) === 'O');
+        const under = mTotals.outcomes.find((o) => norm(String(o.name)) === 'UNDER' || norm(String(o.name)) === 'U');
         const p = (over?.point ?? under?.point) as number | null;
         if (typeof p === 'number' && Number.isFinite(p)) {
           totalLine = p;
         }
       }
 
-      if (favSpread === null && totalLine === null) {
-        continue; // nothing to write
-      }
+      if (favSpread === null && totalLine === null) continue;
 
       upserts.push({
         game_id: gm.game_id,

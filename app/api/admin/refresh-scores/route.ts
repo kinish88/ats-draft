@@ -21,6 +21,8 @@ function assertEnv(): void {
 
 /* ------------------------------- Types -------------------------------- */
 
+type TeamRow = { id: number; name: string; short_name: string };
+
 type GameRow = {
   game_id: number;
   home_name: string;
@@ -75,28 +77,30 @@ async function loadWeekGames(
   supabaseAdmin: ReturnType<typeof createClient>,
   weekId: number
 ): Promise<GameRow[]> {
-  // Build team map first
+  // Teams typed
   const { data: teams, error: tErr } = await supabaseAdmin
     .from('teams')
-    .select('id,name,short_name');
+    .select('id,name,short_name')
+    .returns<TeamRow[]>();
   if (tErr) throw tErr;
 
-  const byId = new Map<number, { name: string; short_name: string }>();
-  (teams ?? []).forEach((t) => byId.set(t.id as number, { name: String(t.name), short_name: String(t.short_name) }));
+  const byId = new Map<number, TeamRow>();
+  (teams ?? []).forEach((t) => byId.set(t.id, { id: t.id, name: t.name, short_name: t.short_name }));
 
-  // Load games
+  // Games typed
+  type GameDB = { id: number; home_team_id: number; away_team_id: number };
   const { data: rows, error } = await supabaseAdmin
     .from('games')
     .select('id, home_team_id, away_team_id')
-    .eq('week_id', weekId);
-
+    .eq('week_id', weekId)
+    .returns<GameDB[]>();
   if (error) throw error;
 
   return (rows ?? []).map((r) => {
-    const h = byId.get(r.home_team_id as number);
-    const a = byId.get(r.away_team_id as number);
+    const h = byId.get(r.home_team_id);
+    const a = byId.get(r.away_team_id);
     return {
-      game_id: r.id as number,
+      game_id: r.id,
       home_name: h?.name ?? '',
       home_short: h?.short_name ?? '',
       away_name: a?.name ?? '',
@@ -125,11 +129,9 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     const byPair = new Map<string, GameRow>();
-    for (const g of games) {
-      byPair.set(keyPair(g.home_name, g.away_name), g);
-    }
+    for (const g of games) byPair.set(keyPair(g.home_name, g.away_name), g);
 
-    // Get scores for recent/near-future games (daysFrom window).
+    // Get scores window
     const params = new URLSearchParams({
       apiKey: ODDS_API_KEY!,
       dateFormat: 'iso',
@@ -166,7 +168,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       let awayScore: number | null = null;
 
       if (Array.isArray(ev.scores) && ev.scores.length >= 2) {
-        // scores entries are per team with full names
         const h = ev.scores.find((s) => norm(String(s.name)) === norm(ev.home_team));
         const a = ev.scores.find((s) => norm(String(s.name)) === norm(ev.away_team));
 
@@ -198,7 +199,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ updated: 0, message: 'No score updates' });
     }
 
-    // Apply updates (simple batch loop)
+    // Apply updates
     let count = 0;
     for (const u of updates) {
       const { error } = await supabaseAdmin
