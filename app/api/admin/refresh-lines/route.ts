@@ -1,211 +1,288 @@
-import { NextResponse } from 'next/server';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+/* Refresh betting lines (spreads + totals) for a given NFL week.
+   Upserts into public.game_lines using Odds API data. */
 
-/** Minimal types (no `any`) */
-type TeamRow = { id: number; short_name: string; name: string };
-type WeekRow = { id: number; season_id: number; week_number: number };
-type GameRow = { id: number; week_id: number; home_team_id: number; away_team_id: number };
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 
-/** Odds API — minimal shapes */
-type OddsOutcome = { name: string; point?: number | null };
-type OddsMarket = { key: string; outcomes?: OddsOutcome[] | null };
-type OddsBookmaker = { key: string; markets?: OddsMarket[] | null };
-type OddsEvent = {
-  home_team?: string;
-  away_team?: string;
-  bookmakers?: OddsBookmaker[] | null;
-};
+/* ----------------------------- Environment ----------------------------- */
 
-const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE ?? '';
-const ODDS_API_KEY = process.env.ODDS_API_KEY ?? '';
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL as string | undefined;
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE as string | undefined;
+const ODDS_API_KEY = process.env.ODDS_API_KEY as string | undefined;
 
-/** Map provider team names -> your short codes */
-const TEAM_NAME_TO_SHORT: Record<string, string> = {
-  'Arizona Cardinals': 'ARI',
-  'Atlanta Falcons': 'ATL',
-  'Baltimore Ravens': 'BAL',
-  'Buffalo Bills': 'BUF',
-  'Carolina Panthers': 'CAR',
-  'Chicago Bears': 'CHI',
-  'Cincinnati Bengals': 'CIN',
-  'Cleveland Browns': 'CLE',
-  'Dallas Cowboys': 'DAL',
-  'Denver Broncos': 'DEN',
-  'Detroit Lions': 'DET',
-  'Green Bay Packers': 'GB',
-  'Houston Texans': 'HOU',
-  'Indianapolis Colts': 'IND',
-  'Jacksonville Jaguars': 'JAX',
-  'Kansas City Chiefs': 'KC',
-  'Las Vegas Raiders': 'LV',
-  'Los Angeles Chargers': 'LAC',
-  'Los Angeles Rams': 'LAR',
-  'Miami Dolphins': 'MIA',
-  'Minnesota Vikings': 'MIN',
-  'New England Patriots': 'NE',
-  'New Orleans Saints': 'NO',
-  'New York Giants': 'NYG',
-  'New York Jets': 'NYJ',
-  'Philadelphia Eagles': 'PHI',
-  'Pittsburgh Steelers': 'PIT',
-  'San Francisco 49ers': 'SF',
-  'Seattle Seahawks': 'SEA',
-  'Tampa Bay Buccaneers': 'TB',
-  'Tennessee Titans': 'TEN',
-  'Washington Commanders': 'WAS',
-};
-
-function assertEnv(): asserts ODDS_API_KEY is string {
+function assertEnv(): void {
   if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
     throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE');
   }
-  if (!ODDS_API_KEY) throw new Error('Missing ODDS_API_KEY');
+  if (!ODDS_API_KEY) {
+    throw new Error('Missing ODDS_API_KEY');
+  }
 }
 
-function createAdmin(): SupabaseClient {
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
-    auth: { persistSession: false },
+/* ------------------------------- Types -------------------------------- */
+
+type TeamRow = {
+  id: number;
+  name: string;       // e.g., "Buffalo Bills"
+  short_name: string; // e.g., "BUF"
+};
+
+type GameRow = {
+  game_id: number;
+  home_name: string;
+  home_short: string;
+  home_id: number;
+  away_name: string;
+  away_short: string;
+  away_id: number;
+};
+
+type OddsOutcome = {
+  name: string;
+  point: number | null;
+  price?: number | null;
+};
+
+type OddsMarketKey = 'spreads' | 'totals';
+
+type OddsMarket = {
+  key: OddsMarketKey;
+  outcomes: OddsOutcome[];
+};
+
+type OddsBookmaker = {
+  key: string;    // e.g., "skybet", "draftkings"
+  title: string;
+  markets: OddsMarket[];
+};
+
+type OddsEvent = {
+  id: string;
+  home_team: string; // full team name
+  away_team: string; // full team name
+  bookmakers: OddsBookmaker[];
+};
+
+/* ------------------------------ Helpers ------------------------------- */
+
+function norm(s: string): string {
+  return s.trim().toUpperCase();
+}
+
+function chooseBookmaker(bms: OddsBookmaker[]): OddsBookmaker | null {
+  if (!bms.length) return null;
+  // prefer UK books if present, else DraftKings, else first
+  const priority = ['skybet', 'williamhill', 'bet365', 'draftkings'];
+  for (const key of priority) {
+    const found = bms.find((b) => b.key === key);
+    if (found) return found;
+  }
+  return bms[0] ?? null;
+}
+
+function marketOf(book: OddsBookmaker, key: OddsMarketKey): OddsMarket | null {
+  return book.markets.find((m) => m.key === key) ?? null;
+}
+
+/* ---------------------------- Supabase bits ---------------------------- */
+
+async function getWeekId(supabaseAdmin: ReturnType<typeof createClient>, year: number, week: number): Promise<number> {
+  // weeks has season_year; prefer that to avoid join
+  const { data, error } = await supabaseAdmin
+    .from('weeks')
+    .select('id')
+    .eq('season_year', year)
+    .eq('week_number', week)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data?.id) throw new Error(`Week not found for ${year} wk ${week}`);
+  return data.id as number;
+}
+
+async function loadWeekGames(
+  supabaseAdmin: ReturnType<typeof createClient>,
+  weekId: number
+): Promise<{ games: GameRow[]; teamsByName: Map<string, TeamRow> }> {
+  // Load teams first for mapping full-name -> id/short
+  const { data: teams, error: tErr } = await supabaseAdmin
+    .from('teams')
+    .select('id,name,short_name');
+
+  if (tErr) throw tErr;
+
+  const teamsByName = new Map<string, TeamRow>();
+  (teams ?? []).forEach((t) => {
+    teamsByName.set(norm(t.name as string), {
+      id: t.id as number,
+      name: t.name as string,
+      short_name: t.short_name as string,
+    });
   });
+
+  // Load games for this week with fully resolved names
+  const { data: rows, error: gErr } = await supabaseAdmin
+    .from('games')
+    .select('id, home_team_id, away_team_id, teams_home:home_team_id (id, name, short_name), teams_away:away_team_id (id, name, short_name)')
+    .eq('week_id', weekId);
+
+  if (gErr) throw gErr;
+
+  const games: GameRow[] = (rows ?? []).map((r) => {
+    const h = (r as unknown as Record<string, unknown>)['teams_home'] as Record<string, unknown>;
+    const a = (r as unknown as Record<string, unknown>)['teams_away'] as Record<string, unknown>;
+    return {
+      game_id: r.id as number,
+      home_name: String(h?.name ?? ''),
+      home_short: String(h?.short_name ?? ''),
+      home_id: Number(h?.id ?? 0),
+      away_name: String(a?.name ?? ''),
+      away_short: String(a?.short_name ?? ''),
+      away_id: Number(a?.id ?? 0),
+    };
+  });
+
+  return { games, teamsByName };
 }
 
-function first<T>(arr: T[] | null | undefined): T | null {
-  return Array.isArray(arr) && arr.length ? arr[0] : null;
+function keyPair(a: string, b: string): string {
+  // order-insensitive key (full names)
+  const A = norm(a);
+  const B = norm(b);
+  return A < B ? `${A}|${B}` : `${B}|${A}`;
 }
 
-export async function POST(req: Request) {
+/* ------------------------------ Handler ------------------------------- */
+
+export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
     assertEnv();
-    const { searchParams } = new URL(req.url);
-    const year = Number(searchParams.get('year'));
-    const week = Number(searchParams.get('week'));
-    const bookmaker = (searchParams.get('bookmaker') || 'skybet').toLowerCase();
-    if (!year || !week) return new NextResponse('Missing year/week', { status: 400 });
 
-    const db = createAdmin();
+    const url = new URL(req.url);
+    const year = Number(url.searchParams.get('year') ?? '2025');
+    const week = Number(url.searchParams.get('week') ?? '1');
 
-    // 1) Resolve week_id
-    const { data: weekRow, error: wErr } = await db
-      .from('weeks')
-      .select('id, season_id, week_number, seasons!inner(year)')
-      .eq('week_number', week)
-      .eq('seasons.year', year)
-      .maybeSingle();
-    if (wErr) throw wErr;
-    if (!weekRow?.id) return new NextResponse('Week not found', { status: 404 });
-    const weekId = (weekRow as unknown as WeekRow).id;
+    const supabaseAdmin = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE!);
 
-    // 2) Load games for that week
-    const { data: games, error: gErr } = await db
-      .from('games')
-      .select('id, week_id, home_team_id, away_team_id')
-      .eq('week_id', weekId);
-    if (gErr) throw gErr;
-    const gamesArr: GameRow[] = (games ?? []) as unknown as GameRow[];
-    if (!gamesArr.length) return NextResponse.json({ updated: 0 });
+    const weekId = await getWeekId(supabaseAdmin, year, week);
+    const { games, teamsByName } = await loadWeekGames(supabaseAdmin, weekId);
 
-    // 3) Teams map (id -> short & name)
-    const { data: teams, error: tErr } = await db
-      .from('teams')
-      .select('id, short_name, name');
-    if (tErr) throw tErr;
-    const byId = new Map<number, TeamRow>();
-    const byShort = new Map<string, TeamRow>();
-    for (const r of (teams ?? []) as TeamRow[]) {
-      byId.set(r.id, r);
-      byShort.set(r.short_name.toUpperCase(), r);
+    if (!games.length) {
+      return NextResponse.json({ updated: 0, message: 'No games for this week' });
     }
 
-    // 4) Build lookup for game by short pair
-    const gameByPair = new Map<string, GameRow>();
-    for (const g of gamesArr) {
-      const home = byId.get(g.home_team_id)?.short_name ?? '';
-      const away = byId.get(g.away_team_id)?.short_name ?? '';
-      if (!home || !away) continue;
-      gameByPair.set(`${home}-${away}`, g);
+    // Build a quick lookup of our games by the pair of full names
+    const byPair = new Map<string, GameRow>();
+    for (const g of games) {
+      byPair.set(keyPair(g.home_name, g.away_name), g);
     }
 
-    // 5) Fetch Odds API — only the book/markets we need
-    const url = new URL('https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds/');
-    url.searchParams.set('apiKey', ODDS_API_KEY);
-    url.searchParams.set('regions', 'uk');
-    url.searchParams.set('markets', 'spreads,totals');
-    url.searchParams.set('bookmakers', bookmaker);
-    url.searchParams.set('oddsFormat', 'american');
-    url.searchParams.set('dateFormat', 'iso');
+    // Fetch odds (spreads + totals) from The Odds API (UK + US fallback)
+    const params = new URLSearchParams({
+      apiKey: ODDS_API_KEY!,
+      regions: 'uk,us',
+      markets: 'spreads,totals',
+      oddsFormat: 'american',
+      dateFormat: 'iso',
+      // bookmakers filter helps return preferred books if available
+      bookmakers: 'skybet,williamhill,bet365,draftkings',
+    });
 
-    const resp = await fetch(url.toString(), { cache: 'no-store' });
-    if (!resp.ok) {
-      const txt = await resp.text();
-      throw new Error(`Odds API ${resp.status}: ${txt}`);
+    const oddsRes = await fetch(
+      `https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds?${params.toString()}`,
+      { method: 'GET', headers: { 'Accept': 'application/json' } }
+    );
+
+    if (!oddsRes.ok) {
+      const text = await oddsRes.text();
+      return NextResponse.json({ error: 'Odds API error', detail: text }, { status: 502 });
     }
-    const events = (await resp.json()) as unknown as OddsEvent[];
 
-    // 6) Parse & upsert
-    const upserts: Array<{ game_id: number; fav_team_id: number | null; spread: number | null; total: number | null; source: string }> = [];
+    const events = (await oddsRes.json()) as OddsEvent[];
+
+    type UpRow = {
+      game_id: number;
+      fav_team_id: number | null;
+      spread: number | null; // favourite’s signed line (negative if favourite)
+      total: number | null;
+      source: string;
+      updated_at: string;
+    };
+
+    const upserts: UpRow[] = [];
 
     for (const ev of events) {
-      const bk = first(ev.bookmakers) as OddsBookmaker | null;
-      if (!bk) continue;
+      const gm = byPair.get(keyPair(ev.home_team, ev.away_team));
+      if (!gm) continue;
 
-      const homeName = ev.home_team ?? '';
-      const awayName = ev.away_team ?? '';
-      const homeShort = TEAM_NAME_TO_SHORT[homeName] ?? '';
-      const awayShort = TEAM_NAME_TO_SHORT[awayName] ?? '';
-      if (!homeShort || !awayShort) continue;
+      const book = chooseBookmaker(ev.bookmakers ?? []);
+      if (!book) continue;
 
-      const game = gameByPair.get(`${homeShort}-${awayShort}`);
-      if (!game) continue;
+      const mSpreads = marketOf(book, 'spreads');
+      const mTotals = marketOf(book, 'totals');
 
-      const mSpreads = (bk.markets ?? []).find((m) => m.key === 'spreads') ?? null;
-      const mTotals  = (bk.markets ?? []).find((m) => m.key === 'totals') ?? null;
+      let favTeamId: number | null = null;
+      let favSpread: number | null = null;
+      let totalLine: number | null = null;
 
-      let homeLine: number | null = null;
-      let awayLine: number | null = null;
-      let total: number | null = null;
-
-      if (mSpreads?.outcomes && mSpreads.outcomes.length >= 2) {
-        // Find by provider names -> your short
-        const oHome = mSpreads.outcomes.find((o) => TEAM_NAME_TO_SHORT[o.name] === homeShort) ?? null;
-        const oAway = mSpreads.outcomes.find((o) => TEAM_NAME_TO_SHORT[o.name] === awayShort) ?? null;
-        homeLine = typeof oHome?.point === 'number' ? oHome.point : null;
-        awayLine = typeof oAway?.point === 'number' ? oAway.point : null;
+      // spreads: two outcomes with team names + signed point (fav negative)
+      if (mSpreads && mSpreads.outcomes?.length) {
+        // Pick the outcome with the most negative point as favourite
+        const valid = mSpreads.outcomes.filter((o) => typeof o.point === 'number');
+        if (valid.length >= 2) {
+          // sort ascending by point (e.g., -7 < -3 < +3)
+          valid.sort((a, b) => (a.point as number) - (b.point as number));
+          const favOutcome = valid[0]; // most negative
+          const favName = norm(favOutcome.name);
+          const team = teamsByName.get(favName);
+          if (team) {
+            favTeamId = team.id;
+            favSpread = favOutcome.point as number;
+          }
+        }
       }
 
-      if (mTotals?.outcomes && mTotals.outcomes.length >= 1) {
-        // Totals market usually duplicates the number for both outcomes
-        const o = mTotals.outcomes[0];
-        total = typeof o.point === 'number' ? o.point : null;
+      // totals: outcomes are Over / Under with line in "point"
+      if (mTotals && mTotals.outcomes?.length) {
+        const over = mTotals.outcomes.find((o) => norm(o.name) === 'OVER' || norm(o.name) === 'O');
+        const under = mTotals.outcomes.find((o) => norm(o.name) === 'UNDER' || norm(o.name) === 'U');
+        const p = (over?.point ?? under?.point) as number | null;
+        if (typeof p === 'number' && Number.isFinite(p)) {
+          totalLine = p;
+        }
       }
 
-      let fav_team_id: number | null = null;
-      if (typeof homeLine === 'number' && typeof awayLine === 'number') {
-        if (homeLine < 0) fav_team_id = game.home_team_id;
-        else if (awayLine < 0) fav_team_id = game.away_team_id;
+      if (favSpread === null && totalLine === null) {
+        // nothing to write
+        continue;
       }
-
-      // Your UI expects `gl.spread` to be the HOME-signed line.
-      const spreadHomeSigned = homeLine ?? (typeof awayLine === 'number' ? -awayLine : null);
 
       upserts.push({
-        game_id: game.id,
-        fav_team_id,
-        spread: spreadHomeSigned,
-        total,
-        source: bookmaker,
+        game_id: gm.game_id,
+        fav_team_id: favTeamId,
+        spread: favSpread,
+        total: totalLine,
+        source: book.key,
+        updated_at: new Date().toISOString(),
       });
     }
 
-    if (!upserts.length) return NextResponse.json({ updated: 0 });
+    if (!upserts.length) {
+      return NextResponse.json({ updated: 0, message: 'No matches from Odds API' });
+    }
 
-    const { error: uErr } = await db
+    const { error: upErr } = await supabaseAdmin
       .from('game_lines')
       .upsert(upserts, { onConflict: 'game_id' });
-    if (uErr) throw uErr;
+
+    if (upErr) {
+      return NextResponse.json({ error: 'Upsert failed', detail: upErr.message }, { status: 500 });
+    }
 
     return NextResponse.json({ updated: upserts.length });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return new NextResponse(msg, { status: 500 });
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
