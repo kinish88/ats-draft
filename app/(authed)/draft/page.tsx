@@ -347,29 +347,28 @@ export default function DraftPage() {
         </div>
 
         {/* Picks feed */}
-        <div className="border rounded">
-          <div className="px-3 py-2 text-xs bg-zinc-900/60 border-b">Picks</div>
-          <div className="p-3 text-sm space-y-2">
-            {picks.length === 0 ? (
-              <div className="text-zinc-400">No picks yet.</div>
-            ) : (
-              picks.map((p) => (
-                <div key={p.pick_id} className="flex items-center justify-between">
-                  <div>
-                    <span className="text-zinc-500 mr-2">#{p.pick_number}</span>
-                    <span className="font-medium">{p.player}</span>{' '}
-                    <span className="text-zinc-400">picked</span>{' '}
-                    <span className="font-medium">{p.picked_team_short ?? '—'}</span>{' '}
-                    <span className="text-zinc-400">
-                      ({p.line_at_pick != null ? fmtSigned(p.line_at_pick) : '—'}) in{' '}
-                      {p.home_short} v {p.away_short}
-                    </span>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
+        <div className="border rounded overflow-hidden">
+  <div className="px-3 py-2 text-xs bg-zinc-900/60 border-b">Picks</div>
+  <ul className="divide-y divide-zinc-800/60">
+    {picks.length === 0 ? (
+      <li className="px-3 py-2 text-zinc-400">No picks yet.</li>
+    ) : (
+      picks.map((p) => {
+        const line =
+          p.spread_at_pick == null
+            ? 'Pick Em'
+            : (p.spread_at_pick > 0 ? `+${p.spread_at_pick}` : `${p.spread_at_pick}`);
+        return (
+          <li key={p.id} className="px-3 py-2">
+            <strong>{p.player_display_name}</strong> picked <strong>{p.team_short}</strong>{' '}
+            ({line}) — {p.home_short} v {p.away_short}
+          </li>
+        );
+      })
+    )}
+  </ul>
+</div>
+
 
         {/* Grouped by player */}
         <div className="grid md:grid-cols-3 gap-3">
