@@ -346,8 +346,8 @@ export default function DraftPage() {
           ) : null}
         </div>
 
-        {/* Picks feed */}
-        <div className="border rounded overflow-hidden">
+ {/* Picks feed */}
+<div className="border rounded overflow-hidden">
   <div className="px-3 py-2 text-xs bg-zinc-900/60 border-b">Picks</div>
   <ul className="divide-y divide-zinc-800/60">
     {picks.length === 0 ? (
@@ -355,12 +355,11 @@ export default function DraftPage() {
     ) : (
       picks.map((p) => {
         const line =
-          p.spread_at_pick == null
-            ? 'Pick Em'
-            : (p.spread_at_pick > 0 ? `+${p.spread_at_pick}` : `${p.spread_at_pick}`);
+          p.line_at_pick == null ? 'Pick Em' : fmtSigned(p.line_at_pick);
         return (
-          <li key={p.id} className="px-3 py-2">
-            <strong>{p.player_display_name}</strong> picked <strong>{p.team_short}</strong>{' '}
+          <li key={p.pick_id} className="px-3 py-2">
+            <strong>{p.player}</strong> picked{' '}
+            <strong>{p.picked_team_short ?? '—'}</strong>{' '}
             ({line}) — {p.home_short} v {p.away_short}
           </li>
         );
@@ -368,6 +367,7 @@ export default function DraftPage() {
     )}
   </ul>
 </div>
+
 
 
         {/* Grouped by player */}
@@ -379,16 +379,17 @@ export default function DraftPage() {
                 <div className="text-sm text-zinc-400">—</div>
               ) : (
                 <ul className="text-sm space-y-1">
-                  {list.map((p) => (
-                    <li key={p.pick_id}>
-                      #{p.pick_number} {p.picked_team_short ?? '—'}{' '}
-                      <span className="text-zinc-400">
-                        {p.line_at_pick != null ? `(${fmtSigned(p.line_at_pick)})` : ''} —{' '}
-                        {p.home_short} v {p.away_short}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+  {list.map((p) => (
+    <li key={p.pick_id}>
+      {p.picked_team_short ?? '—'}{' '}
+      <span className="text-zinc-400">
+        {p.line_at_pick != null ? `(${fmtSigned(p.line_at_pick)})` : ''} —{' '}
+        {p.home_short} v {p.away_short}
+      </span>
+    </li>
+  ))}
+</ul>
+
               )}
             </div>
           ))}
