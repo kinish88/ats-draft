@@ -535,7 +535,7 @@ export default function ScoreboardPage() {
               checked={showBoard}
               onChange={(e) => setShowBoard(e.target.checked)}
             />
-            Show full scores
+            Show full scoreboard
           </label>
         </div>
       </header>
