@@ -55,8 +55,9 @@ function keyPair(a: string, b: string): string {
 }
 
 /* ---------------------------- Supabase bits ---------------------------- */
+/* Use `any` for the client param to avoid TS generic mismatches in Vercel. */
 
-async function getWeekId(supabaseAdmin: ReturnType<typeof createClient>, year: number, week: number): Promise<number> {
+async function getWeekId(supabaseAdmin: any, year: number, week: number): Promise<number> {
   const { data, error } = await supabaseAdmin
     .from('weeks')
     .select('id')
@@ -73,11 +74,7 @@ async function getWeekId(supabaseAdmin: ReturnType<typeof createClient>, year: n
   return row.id;
 }
 
-async function loadWeekGames(
-  supabaseAdmin: ReturnType<typeof createClient>,
-  weekId: number
-): Promise<GameRow[]> {
-  // Teams typed
+async function loadWeekGames(supabaseAdmin: any, weekId: number): Promise<GameRow[]> {
   const { data: teams, error: tErr } = await supabaseAdmin
     .from('teams')
     .select('id,name,short_name')
@@ -87,7 +84,6 @@ async function loadWeekGames(
   const byId = new Map<number, TeamRow>();
   (teams ?? []).forEach((t) => byId.set(t.id, { id: t.id, name: t.name, short_name: t.short_name }));
 
-  // Games typed
   type GameDB = { id: number; home_team_id: number; away_team_id: number };
   const { data: rows, error } = await supabaseAdmin
     .from('games')
@@ -117,6 +113,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     const url = new URL(req.url);
     const year = Number(url.searchParams.get('year') ?? '2025');
+    the
     const week = Number(url.searchParams.get('week') ?? '1');
 
     const supabaseAdmin = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE!);
@@ -186,7 +183,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
       if (homeScore != null || awayScore != null || isFinal) {
         updates.push({
-          id: gm.game_id,
+          id: (gm as GameRow).game_id,
           home_score: homeScore,
           away_score: awayScore,
           is_final: isFinal,

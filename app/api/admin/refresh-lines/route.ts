@@ -51,7 +51,7 @@ type OddsMarket = {
 };
 
 type OddsBookmaker = {
-  key: string;    // e.g., "skybet", "draftkings"
+  key: string;    // e.g., "skybet", "williamhill"
   title: string;
   markets: OddsMarket[];
 };
@@ -90,8 +90,9 @@ function keyPair(a: string, b: string): string {
 }
 
 /* ---------------------------- Supabase bits ---------------------------- */
+/* Use `any` for the client param to avoid TS generic mismatches in Vercel. */
 
-async function getWeekId(supabaseAdmin: ReturnType<typeof createClient>, year: number, week: number): Promise<number> {
+async function getWeekId(supabaseAdmin: any, year: number, week: number): Promise<number> {
   const { data, error } = await supabaseAdmin
     .from('weeks')
     .select('id')
@@ -109,15 +110,13 @@ async function getWeekId(supabaseAdmin: ReturnType<typeof createClient>, year: n
 }
 
 async function loadWeekGames(
-  supabaseAdmin: ReturnType<typeof createClient>,
+  supabaseAdmin: any,
   weekId: number
 ): Promise<{ games: GameRow[]; teamsByName: Map<string, TeamRow> }> {
-  // Load teams with explicit return type (prevents TS inferring never)
   const { data: teams, error: tErr } = await supabaseAdmin
     .from('teams')
     .select('id,name,short_name')
     .returns<TeamRow[]>();
-
   if (tErr) throw tErr;
 
   const byId = new Map<number, TeamRow>();
@@ -128,14 +127,12 @@ async function loadWeekGames(
     byName.set(norm(row.name), row);
   });
 
-  // Load games for the given week (then map via teams table)
   type GameDB = { id: number; home_team_id: number; away_team_id: number };
   const { data: gRows, error: gErr } = await supabaseAdmin
     .from('games')
     .select('id, home_team_id, away_team_id')
     .eq('week_id', weekId)
     .returns<GameDB[]>();
-
   if (gErr) throw gErr;
 
   const games: GameRow[] = (gRows ?? []).map((g) => {
@@ -175,9 +172,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     }
 
     const byPair = new Map<string, GameRow>();
-    for (const g of games) {
-      byPair.set(keyPair(g.home_name, g.away_name), g);
-    }
+    for (const g of games) byPair.set(keyPair(g.home_name, g.away_name), g);
 
     // Fetch odds (spreads + totals)
     const params = new URLSearchParams({
@@ -243,8 +238,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
       // totals
       if (mTotals && mTotals.outcomes?.length) {
-        const over = mTotals.outcomes.find((o) => norm(String(o.name)) === 'OVER' || norm(String(o.name)) === 'O');
-        const under = mTotals.outcomes.find((o) => norm(String(o.name)) === 'UNDER' || norm(String(o.name)) === 'U');
+        const over = mTotals.outcomes.find((o) => {
+          const n = norm(String(o.name));
+          return n === 'OVER' || n === 'O';
+        });
+        const under = mTotals.outcomes.find((o) => {
+          const n = norm(String(o.name));
+          return n === 'UNDER' || n === 'U';
+        });
         const p = (over?.point ?? under?.point) as number | null;
         if (typeof p === 'number' && Number.isFinite(p)) {
           totalLine = p;
