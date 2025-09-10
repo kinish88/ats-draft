@@ -21,7 +21,7 @@ type GameForScore = {
 type WeekOption = { week_number: number };
 
 type AdminSpreadRow = {
-  pick_id: number; // BIGINT in DB → number in TS
+  pick_id: number;
   pick_number: number;
   player: string;
   home_short: string;
@@ -92,38 +92,23 @@ export default function AdminScoresPage() {
     })();
   }, [router]);
 
-  /** -------------------- Loaders -------------------- **/
-// …inside your Admin component file
+  /** -------------------- Refresh buttons (call API routes) -------------------- **/
+  async function callAdminRefresh(kind: 'lines' | 'scores') {
+    const res = await fetch(`/api/admin/refresh-${kind}?year=${YEAR}&week=${week}`, { method: 'POST' });
+    let payload = '';
+    try { payload = JSON.stringify(await res.json()); } catch { /* ignore */ }
 
-async function callAdminRefresh(kind: 'lines' | 'scores', year: number, week: number) {
-  const url = `/api/admin/refresh-${kind}?year=${year}&week=${week}`;
-  const res = await fetch(url, { method: 'POST' });
-  if (!res.ok) {
-    const txt = await res.text();
-    alert(`${kind} refresh failed: ${txt}`);
-    return;
+    if (!res.ok) {
+      alert(`${kind} refresh failed${payload ? `: ${payload}` : ''}`);
+      return;
+    }
+
+    // reload data so UI reflects updates
+    await Promise.all([loadWeekGames(week), loadAdminEditors(week)]);
+    alert(`${kind} refreshed${payload ? ` → ${payload}` : ''}`);
   }
-  const json = (await res.json()) as { updated?: number };
-  alert(`${kind} refreshed${json.updated != null ? ` (${json.updated} updated)` : ''}.`);
-}
 
-// …in JSX, beside your Week selector:
-<div className="flex items-center gap-2">
-  <button
-    className="border rounded px-2 py-1 text-sm"
-    onClick={() => callAdminRefresh('lines', 2025, week)}
-  >
-    Refresh lines
-  </button>
-  <button
-    className="border rounded px-2 py-1 text-sm"
-    onClick={() => callAdminRefresh('scores', 2025, week)}
-  >
-    Refresh scores
-  </button>
-</div>
-
-
+  /** -------------------- Loaders -------------------- **/
   async function loadWeeks() {
     const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
     if (data) setWeeks((data as WeekOption[]).map(w => w.week_number));
@@ -177,7 +162,7 @@ async function callAdminRefresh(kind: 'lines' | 'scores', year: number, week: nu
     return session?.access_token ?? '';
   }
 
-  /** -------------------- Save handlers (call your API routes) -------------------- **/
+  /** -------------------- Save handlers -------------------- **/
   async function saveScore(r: GameForScore) {
     const token = await getToken();
     setSavingId(r.game_id);
@@ -269,6 +254,24 @@ async function callAdminRefresh(kind: 'lines' | 'scores', year: number, week: nu
           />
           Only games with Picks or O/U
         </label>
+
+        {/* NEW: refresh buttons */}
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            className="border rounded px-2 py-1 text-sm"
+            onClick={() => callAdminRefresh('lines')}
+            title="Fetch latest lines into game_lines"
+          >
+            Refresh lines
+          </button>
+          <button
+            className="border rounded px-2 py-1 text-sm"
+            onClick={() => callAdminRefresh('scores')}
+            title="Fetch latest scores into games"
+          >
+            Refresh scores
+          </button>
+        </div>
       </div>
 
       {/* Scores editor */}
