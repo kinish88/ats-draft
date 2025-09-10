@@ -1,5 +1,5 @@
 /* Refresh betting lines (spreads + totals) for a given NFL week.
-   Upserts into public.game_lines using Odds API data. */
+   Upserts into public.game_lines using The Odds API data. */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
@@ -23,8 +23,8 @@ function assertEnv(): void {
 
 type TeamRow = {
   id: number;
-  name: string;       // e.g., "Buffalo Bills"
-  short_name: string; // e.g., "BUF"
+  name: string;
+  short_name: string;
 };
 
 type GameRow = {
@@ -84,73 +84,75 @@ function marketOf(book: OddsBookmaker, key: OddsMarketKey): OddsMarket | null {
   return book.markets.find((m) => m.key === key) ?? null;
 }
 
+function keyPair(a: string, b: string): string {
+  // order-insensitive key (full names)
+  const A = norm(a);
+  const B = norm(b);
+  return A < B ? `${A}|${B}` : `${B}|${A}`;
+}
+
 /* ---------------------------- Supabase bits ---------------------------- */
 
 async function getWeekId(supabaseAdmin: ReturnType<typeof createClient>, year: number, week: number): Promise<number> {
-  // weeks has season_year; prefer that to avoid join
+  // Explicitly type the result of maybeSingle to avoid TS inferring never
   const { data, error } = await supabaseAdmin
     .from('weeks')
     .select('id')
     .eq('season_year', year)
     .eq('week_number', week)
-    .limit(1)
     .maybeSingle();
 
+  const row = data as { id: number } | null;
+
   if (error) throw error;
-  if (!data?.id) throw new Error(`Week not found for ${year} wk ${week}`);
-  return data.id as number;
+  if (!row || typeof row.id !== 'number') {
+    throw new Error(`Week not found for ${year} wk ${week}`);
+  }
+  return row.id;
 }
 
 async function loadWeekGames(
   supabaseAdmin: ReturnType<typeof createClient>,
   weekId: number
 ): Promise<{ games: GameRow[]; teamsByName: Map<string, TeamRow> }> {
-  // Load teams first for mapping full-name -> id/short
+  // Load teams (id -> full mapping)
   const { data: teams, error: tErr } = await supabaseAdmin
     .from('teams')
     .select('id,name,short_name');
 
   if (tErr) throw tErr;
 
-  const teamsByName = new Map<string, TeamRow>();
+  const byId = new Map<number, TeamRow>();
+  const byName = new Map<string, TeamRow>();
   (teams ?? []).forEach((t) => {
-    teamsByName.set(norm(t.name as string), {
-      id: t.id as number,
-      name: t.name as string,
-      short_name: t.short_name as string,
-    });
+    const row: TeamRow = { id: t.id as number, name: String(t.name), short_name: String(t.short_name) };
+    byId.set(row.id, row);
+    byName.set(norm(row.name), row);
   });
 
-  // Load games for this week with fully resolved names
-  const { data: rows, error: gErr } = await supabaseAdmin
+  // Load games for the given week (use team ids, then map via teams table)
+  const { data: gRows, error: gErr } = await supabaseAdmin
     .from('games')
-    .select('id, home_team_id, away_team_id, teams_home:home_team_id (id, name, short_name), teams_away:away_team_id (id, name, short_name)')
+    .select('id, home_team_id, away_team_id')
     .eq('week_id', weekId);
 
   if (gErr) throw gErr;
 
-  const games: GameRow[] = (rows ?? []).map((r) => {
-    const h = (r as unknown as Record<string, unknown>)['teams_home'] as Record<string, unknown>;
-    const a = (r as unknown as Record<string, unknown>)['teams_away'] as Record<string, unknown>;
+  const games: GameRow[] = (gRows ?? []).map((g) => {
+    const h = byId.get(g.home_team_id as number);
+    const a = byId.get(g.away_team_id as number);
     return {
-      game_id: r.id as number,
-      home_name: String(h?.name ?? ''),
-      home_short: String(h?.short_name ?? ''),
-      home_id: Number(h?.id ?? 0),
-      away_name: String(a?.name ?? ''),
-      away_short: String(a?.short_name ?? ''),
-      away_id: Number(a?.id ?? 0),
+      game_id: g.id as number,
+      home_name: h?.name ?? '',
+      home_short: h?.short_name ?? '',
+      home_id: h?.id ?? 0,
+      away_name: a?.name ?? '',
+      away_short: a?.short_name ?? '',
+      away_id: a?.id ?? 0,
     };
   });
 
-  return { games, teamsByName };
-}
-
-function keyPair(a: string, b: string): string {
-  // order-insensitive key (full names)
-  const A = norm(a);
-  const B = norm(b);
-  return A < B ? `${A}|${B}` : `${B}|${A}`;
+  return { games, teamsByName: byName };
 }
 
 /* ------------------------------ Handler ------------------------------- */
@@ -185,13 +187,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       markets: 'spreads,totals',
       oddsFormat: 'american',
       dateFormat: 'iso',
-      // bookmakers filter helps return preferred books if available
       bookmakers: 'skybet,williamhill,bet365,draftkings',
     });
 
     const oddsRes = await fetch(
       `https://api.the-odds-api.com/v4/sports/americanfootball_nfl/odds?${params.toString()}`,
-      { method: 'GET', headers: { 'Accept': 'application/json' } }
+      { method: 'GET', headers: { Accept: 'application/json' } }
     );
 
     if (!oddsRes.ok) {
@@ -228,12 +229,11 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
       // spreads: two outcomes with team names + signed point (fav negative)
       if (mSpreads && mSpreads.outcomes?.length) {
-        // Pick the outcome with the most negative point as favourite
         const valid = mSpreads.outcomes.filter((o) => typeof o.point === 'number');
         if (valid.length >= 2) {
-          // sort ascending by point (e.g., -7 < -3 < +3)
+          // Sort ascending by point (e.g., -7 < -3 < +3)
           valid.sort((a, b) => (a.point as number) - (b.point as number));
-          const favOutcome = valid[0]; // most negative
+          const favOutcome = valid[0];
           const favName = norm(favOutcome.name);
           const team = teamsByName.get(favName);
           if (team) {
@@ -254,8 +254,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       }
 
       if (favSpread === null && totalLine === null) {
-        // nothing to write
-        continue;
+        continue; // nothing to write
       }
 
       upserts.push({

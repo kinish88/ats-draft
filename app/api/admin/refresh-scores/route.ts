@@ -1,5 +1,5 @@
 /* Refresh final/live scores for a given NFL week.
-   Updates public.games(home_score, away_score, is_final, is_live) from Odds API. */
+   Updates public.games(home_score, away_score, is_final, is_live) from The Odds API. */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
@@ -20,12 +20,6 @@ function assertEnv(): void {
 }
 
 /* ------------------------------- Types -------------------------------- */
-
-type TeamRow = {
-  id: number;
-  name: string;
-  short_name: string;
-};
 
 type GameRow = {
   game_id: number;
@@ -66,34 +60,47 @@ async function getWeekId(supabaseAdmin: ReturnType<typeof createClient>, year: n
     .select('id')
     .eq('season_year', year)
     .eq('week_number', week)
-    .limit(1)
     .maybeSingle();
 
+  const row = data as { id: number } | null;
+
   if (error) throw error;
-  if (!data?.id) throw new Error(`Week not found for ${year} wk ${week}`);
-  return data.id as number;
+  if (!row || typeof row.id !== 'number') {
+    throw new Error(`Week not found for ${year} wk ${week}`);
+  }
+  return row.id;
 }
 
 async function loadWeekGames(
   supabaseAdmin: ReturnType<typeof createClient>,
   weekId: number
 ): Promise<GameRow[]> {
+  // Build team map first
+  const { data: teams, error: tErr } = await supabaseAdmin
+    .from('teams')
+    .select('id,name,short_name');
+  if (tErr) throw tErr;
+
+  const byId = new Map<number, { name: string; short_name: string }>();
+  (teams ?? []).forEach((t) => byId.set(t.id as number, { name: String(t.name), short_name: String(t.short_name) }));
+
+  // Load games
   const { data: rows, error } = await supabaseAdmin
     .from('games')
-    .select('id, teams_home:home_team_id (name, short_name), teams_away:away_team_id (name, short_name)')
+    .select('id, home_team_id, away_team_id')
     .eq('week_id', weekId);
 
   if (error) throw error;
 
   return (rows ?? []).map((r) => {
-    const h = (r as unknown as Record<string, unknown>)['teams_home'] as Record<string, unknown>;
-    const a = (r as unknown as Record<string, unknown>)['teams_away'] as Record<string, unknown>;
+    const h = byId.get(r.home_team_id as number);
+    const a = byId.get(r.away_team_id as number);
     return {
       game_id: r.id as number,
-      home_name: String(h?.name ?? ''),
-      home_short: String(h?.short_name ?? ''),
-      away_name: String(a?.name ?? ''),
-      away_short: String(a?.short_name ?? ''),
+      home_name: h?.name ?? '',
+      home_short: h?.short_name ?? '',
+      away_name: a?.name ?? '',
+      away_short: a?.short_name ?? '',
     };
   });
 }
@@ -131,7 +138,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     const resp = await fetch(
       `https://api.the-odds-api.com/v4/sports/americanfootball_nfl/scores?${params.toString()}`,
-      { method: 'GET', headers: { 'Accept': 'application/json' } }
+      { method: 'GET', headers: { Accept: 'application/json' } }
     );
 
     if (!resp.ok) {
@@ -173,7 +180,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
         awayScore = Number.isFinite(av as number) ? (av as number) : null;
       }
 
-      // If we have any score info, queue an update. Mark live if not completed but scores exist.
       const isFinal = Boolean(ev.completed);
       const isLive = !isFinal && (homeScore != null || awayScore != null);
 
@@ -192,7 +198,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       return NextResponse.json({ updated: 0, message: 'No score updates' });
     }
 
-    // Apply updates (batch loop)
+    // Apply updates (simple batch loop)
     let count = 0;
     for (const u of updates) {
       const { error } = await supabaseAdmin
