@@ -113,43 +113,65 @@ export default function DraftPage() {
     const rows: unknown[] = Array.isArray(data) ? (data as unknown[]) : [];
 
     const mapped: BoardRow[] = rows.map((r) => {
-      const o = asRec(r);
-      const home = toStr(o.home_short);
-      const away = toStr(o.away_short);
+  const o = asRec(r);
+  const home = toStr(o.home_short);
+  const away = toStr(o.away_short);
 
-      // Prefer explicit per-team lines if they’re ever present
-      let hLine =
-        toNumOrNull(o.home_line) ??
-        toNumOrNull(o.home_spread) ??
-        toNumOrNull(o.spread_home);
-      let aLine =
-        toNumOrNull(o.away_line) ??
-        toNumOrNull(o.away_spread) ??
-        toNumOrNull(o.spread_away);
+  // 1) Best: already-signed per-team numbers (support multiple possible column names)
+  let hLine =
+    toNumOrNull(o.home_line) ??
+    toNumOrNull(o.home_spread) ??
+    toNumOrNull(o.spread_home);
+  let aLine =
+    toNumOrNull(o.away_line) ??
+    toNumOrNull(o.away_spread) ??
+    toNumOrNull(o.spread_away);
 
-      // Treat RPC 'spread' as the *home* line when not provided per-team
-      if (hLine == null || aLine == null) {
-        const s = toNumOrNull(o.spread);
-        if (s != null) {
-          hLine = s;
-          aLine = -s;
-        }
+  // 2) If not present, derive sign from favorite info + one spread number
+  if (hLine == null || aLine == null) {
+    const raw = toNumOrNull(o.spread); // could be +/- or abs
+    const favShort = toStr(o.favorite_short, '').toUpperCase();
+    const favIsHome: boolean | null =
+      favShort
+        ? favShort === home.toUpperCase()
+        : typeof o.favorite_is_home === 'boolean'
+        ? Boolean(o.favorite_is_home)
+        : typeof o.is_home_favorite === 'boolean'
+        ? Boolean(o.is_home_favorite)
+        : null;
+
+    if (raw != null) {
+      const mag = Math.abs(raw);
+      if (favIsHome === true) {
+        hLine = -mag;
+        aLine = +mag;
+      } else if (favIsHome === false) {
+        hLine = +mag;
+        aLine = -mag;
+      } else {
+        // Last-ditch fallback: assume value is home-signed (old behavior)
+        hLine = raw;
+        aLine = -raw;
       }
+    }
+  }
 
-      if (hLine == null || aLine == null) {
-        hLine = 0;
-        aLine = 0;
-      }
+  // 3) Final fallback
+  if (hLine == null || aLine == null) {
+    hLine = 0;
+    aLine = 0;
+  }
 
-      return {
-        game_id: Number(o.game_id ?? o.id ?? 0),
-        home_short: home,
-        away_short: away,
-        home_line: hLine,
-        away_line: aLine,
-        total: toNumOrNull(o.total),
-      };
-    });
+  return {
+    game_id: Number(o.game_id ?? o.id ?? 0),
+    home_short: home,
+    away_short: away,
+    home_line: hLine,
+    away_line: aLine,
+    total: toNumOrNull(o.total),
+  };
+});
+
 
     setBoard(mapped);
   }
