@@ -300,40 +300,44 @@ export default function ScoreboardPage() {
 
     setGames(merged);
 
-    // 3) Picks
-    const [{ data: sp }, { data: ou }] = await Promise.all([
-      supabase.rpc('get_week_spread_picks_admin', { p_year: YEAR, p_week: w }),
-      supabase.rpc('get_week_ou_picks_admin', { p_year: YEAR, p_week: w }),
-    ]);
+    // 3) Picks  — direct from table, no RPC
+const { data: sp, error: spErr } = await supabase
+  .from('picks')
+  .select('pick_number, player_display_name, team_short, spread_at_pick, home_short, away_short')
+  .eq('season_year', YEAR)
+  .eq('week_id', w)
+  .order('pick_number', { ascending: true });
 
-    const spArr = Array.isArray(sp) ? (sp as unknown[]) : [];
-    const spMapped: SpreadPickRow[] = spArr.map((r) => {
-      const x = r as AdminSpreadRowUnknown;
-      return {
-        pick_number: toNumOrNull(x.pick_number) ?? 0,
-        player_display_name: toStr(x.player),
-        team_short: toStr(x.team_short),
-        spread: toNumOrNull(x.spread_at_pick),
-        home_short: toStr(x.home_short),
-        away_short: toStr(x.away_short),
-      };
-    });
-    setSpreadPicks(spMapped);
+if (spErr) console.error('spread picks fetch error', spErr);
 
-    const ouArr = Array.isArray(ou) ? (ou as unknown[]) : [];
-    const ouMapped: OuPickRow[] = ouArr.map((r) => {
-      const x = r as AdminOuRowUnknown;
-      const sideRaw = toStr(x.pick_side).trim().toUpperCase();
-      const side: 'OVER' | 'UNDER' = sideRaw === 'UNDER' ? 'UNDER' : 'OVER';
-      return {
-        player_display_name: toStr(x.player),
-        home_short: toStr(x.home_short),
-        away_short: toStr(x.away_short),
-        ou_choice: side,
-        ou_total: toNumOrNull(x.total_at_pick) ?? 0,
-      };
-    });
-    setOuPicks(ouMapped);
+const spArr = Array.isArray(sp) ? (sp as unknown[]) : [];
+const spMapped: SpreadPickRow[] = spArr.map((x: any) => ({
+  pick_number: toNumOrNull(x.pick_number) ?? 0,
+  player_display_name: toStr(x.player_display_name),
+  team_short: toStr(x.team_short),
+  spread: toNumOrNull(x.spread_at_pick),
+  home_short: toStr(x.home_short),
+  away_short: toStr(x.away_short),
+}));
+setSpreadPicks(spMapped);
+
+// keep OU as-is
+const { data: ou } = await supabase.rpc('get_week_ou_picks_admin', { p_year: YEAR, p_week: w });
+const ouArr = Array.isArray(ou) ? (ou as unknown[]) : [];
+const ouMapped: OuPickRow[] = ouArr.map((r) => {
+  const x = r as AdminOuRowUnknown;
+  const sideRaw = toStr(x.pick_side).trim().toUpperCase();
+  const side: 'OVER' | 'UNDER' = sideRaw === 'UNDER' ? 'UNDER' : 'OVER';
+  return {
+    player_display_name: toStr(x.player),
+    home_short: toStr(x.home_short),
+    away_short: toStr(x.away_short),
+    ou_choice: side,
+    ou_total: toNumOrNull(x.total_at_pick) ?? 0,
+  };
+});
+setOuPicks(ouMapped);
+
 
     setLoading(false);
   };
