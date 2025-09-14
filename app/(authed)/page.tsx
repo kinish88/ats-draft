@@ -202,7 +202,7 @@ function StatusPill({ outcome }: { outcome: Outcome }) {
 /* --------------------------------- page ---------------------------------- */
 
 export default function ScoreboardPage() {
-  const [week, setWeek] = useState<number>(1);
+  const [week, setWeek] = useState<number | null>(null);
   const [weeks, setWeeks] = useState<number[]>([]);
   const [games, setGames] = useState<GameRow[]>([]);
   const [spreadPicks, setSpreadPicks] = useState<SpreadPickRow[]>([]);
@@ -213,14 +213,22 @@ export default function ScoreboardPage() {
   /* ------------------------------ load weeks ------------------------------ */
 
   const loadWeeks = async () => {
-    const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
-    const arr = Array.isArray(data) ? (data as unknown[]) : [];
-    const list = arr
-      .map((w) => (w && typeof w === 'object' ? (w as WeekRow).week_number : undefined))
-      .filter((n): n is number => typeof n === 'number');
+  const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
+  const arr = Array.isArray(data) ? (data as unknown[]) : [];
+  const list = arr
+    .map((w) => (w && typeof w === 'object' ? (w as { week_number: number }).week_number : undefined))
+    .filter((n): n is number => typeof n === 'number')
+    .sort((a, b) => a - b);
 
-    setWeeks(list.length ? list : Array.from({ length: 18 }, (_, i) => i + 1));
-  };
+  setWeeks(list.length ? list : Array.from({ length: 18 }, (_, i) => i + 1));
+
+  // Set default to the latest available week on first load
+  if (week === null) {
+    const def = list.length ? list[list.length - 1] : 1;
+    setWeek(def);
+  }
+};
+
 
   /* ------------------------------- load all ------------------------------- */
 
@@ -366,8 +374,9 @@ setOuPicks(ouMapped);
   }, []);
 
   useEffect(() => {
-    loadAll(week);
-  }, [week]);
+  if (week != null) loadAll(week);
+}, [week]);
+
 
   /* ------------------------------ realtime live --------------------------- */
 
@@ -540,16 +549,15 @@ setOuPicks(ouMapped);
           <div className="flex items-center gap-2">
             <label className="text-sm opacity-70">Week</label>
             <select
-              className="border rounded p-1 bg-transparent"
-              value={week}
-              onChange={(e) => setWeek(parseInt(e.target.value, 10))}
-            >
-              {weeks.map((w) => (
-                <option key={w} value={w}>
-                  Week {w}
-                </option>
-              ))}
-            </select>
+  className="border rounded p-1 bg-transparent"
+  value={week ?? (weeks.length ? Math.max(...weeks) : 1)}
+  onChange={(e) => setWeek(parseInt(e.target.value, 10))}
+>
+  {weeks.map((w) => (
+    <option key={w} value={w}>Week {w}</option>
+  ))}
+</select>
+
           </div>
 
           <label className="text-sm flex items-center gap-2 select-none">
