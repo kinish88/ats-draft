@@ -222,11 +222,21 @@ export default function ScoreboardPage() {
 
   setWeeks(list.length ? list : Array.from({ length: 18 }, (_, i) => i + 1));
 
-  // Set default to the latest available week on first load
-  if (week === null) {
-    const def = list.length ? list[list.length - 1] : 1;
-    setWeek(def);
-  }
+  // after setWeeks(...)
+if (week === null) {
+  // pick the latest week that actually has picks this season
+  const { data: lastPick } = await supabase
+    .from('picks')
+    .select('week_id')
+    .eq('season_year', YEAR)
+    .order('week_id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const def = lastPick?.week_id ?? (list.length ? list[list.length - 1] : 1);
+  setWeek(def);
+}
+
 };
 
 
