@@ -113,70 +113,69 @@ export default function DraftPage() {
     const rows: unknown[] = Array.isArray(data) ? (data as unknown[]) : [];
 
     const mapped: BoardRow[] = rows.map((r) => {
-  const o = asRec(r);
-  const home = toStr(o.home_short);
-  const away = toStr(o.away_short);
+      const o = asRec(r);
+      const home = toStr(o.home_short);
+      const away = toStr(o.away_short);
 
-  // 1) Best: already-signed per-team numbers (support multiple possible column names)
-  let hLine =
-    toNumOrNull(o.home_line) ??
-    toNumOrNull(o.home_spread) ??
-    toNumOrNull(o.spread_home);
-  let aLine =
-    toNumOrNull(o.away_line) ??
-    toNumOrNull(o.away_spread) ??
-    toNumOrNull(o.spread_away);
+      // 1) Best: already-signed per-team numbers (support multiple possible column names)
+      let hLine =
+        toNumOrNull(o.home_line) ??
+        toNumOrNull(o.home_spread) ??
+        toNumOrNull(o.spread_home);
+      let aLine =
+        toNumOrNull(o.away_line) ??
+        toNumOrNull(o.away_spread) ??
+        toNumOrNull(o.spread_away);
 
-  // 2) If not present, derive sign from favorite info + one spread number
-  if (hLine == null || aLine == null) {
-    const raw = toNumOrNull(o.spread); // could be +/- or abs
-    const favShort = toStr(o.favorite_short, '').toUpperCase();
-    const favIsHome: boolean | null =
-      favShort
-        ? favShort === home.toUpperCase()
-        : typeof o.favorite_is_home === 'boolean'
-        ? Boolean(o.favorite_is_home)
-        : typeof o.is_home_favorite === 'boolean'
-        ? Boolean(o.is_home_favorite)
-        : null;
+      // 2) If not present, derive sign from favorite info + one spread number
+      if (hLine == null || aLine == null) {
+        const raw = toNumOrNull(o.spread); // could be +/- or abs
+        const favShort = toStr(o.favorite_short, '').toUpperCase();
+        const favIsHome: boolean | null =
+          favShort
+            ? favShort === home.toUpperCase()
+            : typeof o.favorite_is_home === 'boolean'
+            ? Boolean(o.favorite_is_home)
+            : typeof o.is_home_favorite === 'boolean'
+            ? Boolean(o.is_home_favorite)
+            : null;
 
-    if (raw != null) {
-      const mag = Math.abs(raw);
-      if (favIsHome === true) {
-        hLine = -mag;
-        aLine = +mag;
-      } else if (favIsHome === false) {
-        hLine = +mag;
-        aLine = -mag;
-      } else {
-        // Last-ditch fallback: assume value is home-signed (old behavior)
-        hLine = raw;
-        aLine = -raw;
+        if (raw != null) {
+          const mag = Math.abs(raw);
+          if (favIsHome === true) {
+            hLine = -mag;
+            aLine = +mag;
+          } else if (favIsHome === false) {
+            hLine = +mag;
+            aLine = -mag;
+          } else {
+            // Last-ditch fallback: assume value is home-signed (old behavior)
+            hLine = raw;
+            aLine = -raw;
+          }
+        }
       }
-    }
-  }
 
-  // 3) Final fallback
-  if (hLine == null || aLine == null) {
-    hLine = 0;
-    aLine = 0;
-  }
+      // 3) Final fallback
+      if (hLine == null || aLine == null) {
+        hLine = 0;
+        aLine = 0;
+      }
 
-  return {
-    game_id: Number(o.game_id ?? o.id ?? 0),
-    home_short: home,
-    away_short: away,
-    home_line: hLine,
-    away_line: aLine,
-    total: toNumOrNull(o.total),
-  };
-});
-
+      return {
+        game_id: Number(o.game_id ?? o.id ?? 0),
+        home_short: home,
+        away_short: away,
+        home_line: hLine,
+        away_line: aLine,
+        total: toNumOrNull(o.total),
+      };
+    });
 
     setBoard(mapped);
   }
 
-  /* load picks (use the RPC you created so we don’t care about table columns) */
+  /* load picks (RPC view) */
   async function loadPicks(w: number) {
     const { data } = await supabase.rpc('get_week_picks', {
       p_year: YEAR,
@@ -216,32 +215,79 @@ export default function DraftPage() {
     loadPicks(week);
   }, [week]);
 
-  /* realtime picks → just reload from the RPC to keep it simple & correct */
-  useEffect(() => {
-    const ch = supabase
-      .channel('draft-picks')
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'picks' },
-        (_payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
-          // A pick landed — refresh the list for this week
-          loadPicks(week);
-        },
-      )
-      .subscribe();
+  /* realtime: refresh picks on spreads + O/U; refresh board on scores/lines */
+useEffect(() => {
+  const ch = supabase
+    .channel('draft-live')
+    // Spread picks
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'picks' },
+      (_payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
+        // new spread pick → refresh the list for this week
+        loadPicks(week);
+      }
+    )
+    // O/U picks (insert or upsert)
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'ou_picks' },
+      (_payload) => {
+        loadPicks(week);
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'ou_picks' },
+      (_payload) => {
+        loadPicks(week);
+      }
+    )
+    // Live scores and line/total changes → refresh the board
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'games' },
+      (_payload) => {
+        loadBoard(week);
+      }
+    )
+    .on(
+      'postgres_changes',
+      { event: 'UPDATE', schema: 'public', table: 'game_lines' },
+      (_payload) => {
+        loadBoard(week);
+      }
+    )
+    .subscribe();
 
-    return () => {
-      void supabase.removeChannel(ch);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [week]);
+  return () => {
+    void supabase.removeChannel(ch);
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [week]);
+
 
   /* derived */
   const totalPicksSoFar = picks.length;
   const onClock = onClockName(totalPicksSoFar, week);
   const isMyTurn = myName != null && onClock === myName;
 
-  // Set of teams already picked this week (disable those buttons)
+  // Count only spread picks (team picks)
+  const spreadPicksCount = useMemo(
+    () => picks.filter(p => p.picked_team_short != null).length,
+    [picks]
+  );
+
+  // O/U phase starts after 9 spread picks
+  const ouPhase = spreadPicksCount >= 9;
+
+  // Has this user already made their O/U pick this week?
+  const myOuAlreadyPicked = useMemo(
+    () => myName != null && picks.some(p => p.player === myName && p.total_at_pick != null),
+    [picks, myName]
+  );
+
+  // Set of teams already picked this week (disable those spread buttons)
   const pickedTeams = useMemo(() => {
     const s = new Set<string>();
     for (const p of picks) {
@@ -266,43 +312,23 @@ export default function DraftPage() {
     return Array.from(map.entries());
   }, [picks]);
 
-  /* UI bits */
-
-  function GameRow({ row }: { row: BoardRow }) {
-    return (
-      <div className="flex items-center justify-between px-3 py-2">
-        <div className="flex items-center gap-2">
-          <img src={teamLogo(row.home_short) || ''} alt={row.home_short} className="w-4 h-4 rounded-sm" />
-          <span className="w-8 font-semibold">{row.home_short}</span>
-          <span className="ml-1 text-xs text-zinc-400">{fmtSigned(row.home_line)}</span>
-          <span className="text-zinc-500 mx-2">v</span>
-          <img src={teamLogo(row.away_short) || ''} alt={row.away_short} className="w-4 h-4 rounded-sm" />
-          <span className="w-8 font-semibold">{row.away_short}</span>
-          <span className="ml-1 text-xs text-zinc-400">{fmtSigned(row.away_line)}</span>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="w-12 text-right tabular-nums">{row.total ?? '—'}</span>
-        </div>
-      </div>
-    );
-  }
+  /* handlers */
 
   async function makePick(row: BoardRow, team_short: string) {
-    if (!isMyTurn) return;
+    if (!isMyTurn || ouPhase) return; // lock spreads once O/U phase starts
 
     const teamLine = team_short === row.home_short ? row.home_line : row.away_line;
 
     const { error } = await supabase.from('picks').insert([
       {
         season_year: YEAR,
-        // no week_number here (column doesn’t exist)
         pick_number: totalPicksSoFar + 1,
         player_display_name: myName,
         team_short,
         home_short: row.home_short,
         away_short: row.away_short,
         spread_at_pick: teamLine,
-        game_id: row.game_id, // helpful for backfill/linking to week
+        game_id: row.game_id,
       },
     ]);
 
@@ -311,8 +337,29 @@ export default function DraftPage() {
       return;
     }
 
-    // Optimistic refresh (realtime will also update, but this feels snappy)
     loadPicks(week);
+  }
+
+  async function handleOuPick(
+    game: { id: number; home: string; away: string },
+    side: 'OVER' | 'UNDER',
+    playerName: string | null
+  ) {
+    if (!isMyTurn || !ouPhase || !playerName) return;
+    const { error } = await supabase.rpc('make_ou_pick_by_shorts', {
+      p_year: YEAR,
+      p_week: week,
+      p_player: playerName,
+      p_home: game.home,
+      p_away: game.away,
+      p_side: side,
+    });
+    if (error) {
+      console.error('make_ou_pick error', error);
+      alert(`Could not place O/U pick: ${error.message}`);
+    } else {
+      loadPicks(week);
+    }
   }
 
   /* render */
@@ -346,7 +393,20 @@ export default function DraftPage() {
         <div className="divide-y divide-zinc-800/60">
           {board.map((r, i) => (
             <div key={`${r.game_id}-${i}`}>
-              <GameRow row={r} />
+              <div className="flex items-center justify-between px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <img src={teamLogo(r.home_short) || ''} alt={r.home_short} className="w-4 h-4 rounded-sm" />
+                  <span className="w-8 font-semibold">{r.home_short}</span>
+                  <span className="ml-1 text-xs text-zinc-400">{fmtSigned(r.home_line)}</span>
+                  <span className="text-zinc-500 mx-2">v</span>
+                  <img src={teamLogo(r.away_short) || ''} alt={r.away_short} className="w-4 h-4 rounded-sm" />
+                  <span className="w-8 font-semibold">{r.away_short}</span>
+                  <span className="ml-1 text-xs text-zinc-400">{fmtSigned(r.away_line)}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="w-12 text-right tabular-nums">{r.total ?? '—'}</span>
+                </div>
+              </div>
             </div>
           ))}
         </div>
@@ -368,29 +428,27 @@ export default function DraftPage() {
           ) : null}
         </div>
 
- {/* Picks feed */}
-<div className="border rounded overflow-hidden">
-  <div className="px-3 py-2 text-xs bg-zinc-900/60 border-b">Picks</div>
-  <ul className="divide-y divide-zinc-800/60">
-    {picks.length === 0 ? (
-      <li className="px-3 py-2 text-zinc-400">No picks yet.</li>
-    ) : (
-      picks.map((p) => {
-        const line =
-          p.line_at_pick == null ? 'Pick Em' : fmtSigned(p.line_at_pick);
-        return (
-          <li key={p.pick_id} className="px-3 py-2">
-            <strong>{p.player}</strong> picked{' '}
-            <strong>{p.picked_team_short ?? '—'}</strong>{' '}
-            ({line}) — {p.home_short} v {p.away_short}
-          </li>
-        );
-      })
-    )}
-  </ul>
-</div>
-
-
+        {/* Picks feed */}
+        <div className="border rounded overflow-hidden">
+          <div className="px-3 py-2 text-xs bg-zinc-900/60 border-b">Picks</div>
+          <ul className="divide-y divide-zinc-800/60">
+            {picks.length === 0 ? (
+              <li className="px-3 py-2 text-zinc-400">No picks yet.</li>
+            ) : (
+              picks.map((p) => {
+                const line =
+                  p.line_at_pick == null ? 'Pick Em' : fmtSigned(p.line_at_pick);
+                return (
+                  <li key={p.pick_id} className="px-3 py-2">
+                    <strong>{p.player}</strong> picked{' '}
+                    <strong>{p.picked_team_short ?? '—'}</strong>{' '}
+                    ({line}) — {p.home_short} v {p.away_short}
+                  </li>
+                );
+              })
+            )}
+          </ul>
+        </div>
 
         {/* Grouped by player */}
         <div className="grid md:grid-cols-3 gap-3">
@@ -401,21 +459,27 @@ export default function DraftPage() {
                 <div className="text-sm text-zinc-400">—</div>
               ) : (
                 <ul className="text-sm space-y-1">
-  {list.map((p) => (
-    <li key={p.pick_id}>
-      {p.picked_team_short ?? '—'}{' '}
-      <span className="text-zinc-400">
-        {p.line_at_pick != null ? `(${fmtSigned(p.line_at_pick)})` : ''} —{' '}
-        {p.home_short} v {p.away_short}
-      </span>
-    </li>
-  ))}
-</ul>
-
+                  {list.map((p) => (
+                    <li key={p.pick_id}>
+                      {p.picked_team_short ?? '—'}{' '}
+                      <span className="text-zinc-400">
+                        {p.line_at_pick != null ? `(${fmtSigned(p.line_at_pick)})` : ''} —{' '}
+                        {p.home_short} v {p.away_short}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
           ))}
         </div>
+
+        {/* O/U phase banner */}
+        {ouPhase && (
+          <div className="text-sm text-amber-400">
+            O/U phase started — spread picks are now locked. Make your OVER/UNDER pick.
+          </div>
+        )}
 
         {/* Pick buttons */}
         <div className="grid md:grid-cols-2 gap-3">
@@ -436,21 +500,62 @@ export default function DraftPage() {
                 </div>
 
                 <div className="flex items-center gap-2">
+                  {/* Spread buttons: lock during O/U phase */}
                   <button
                     className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                    disabled={!isMyTurn || homeTaken}
+                    disabled={!isMyTurn || ouPhase || homeTaken}
                     onClick={() => makePick(r, r.home_short)}
-                    title={homeTaken ? 'Already taken' : 'Pick home'}
+                    title={ouPhase ? 'O/U phase has started' : homeTaken ? 'Already taken' : 'Pick home'}
                   >
                     Pick {r.home_short} ({fmtSigned(r.home_line)})
                   </button>
                   <button
                     className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                    disabled={!isMyTurn || awayTaken}
+                    disabled={!isMyTurn || ouPhase || awayTaken}
                     onClick={() => makePick(r, r.away_short)}
-                    title={awayTaken ? 'Already taken' : 'Pick away'}
+                    title={ouPhase ? 'O/U phase has started' : awayTaken ? 'Already taken' : 'Pick away'}
                   >
                     Pick {r.away_short} ({fmtSigned(r.away_line)})
+                  </button>
+
+                  {/* O/U buttons: enabled during O/U phase, once per player, total required */}
+                  <button
+                    className="border rounded px-2 py-1 text-sm disabled:opacity-40"
+                    disabled={!isMyTurn || !ouPhase || myOuAlreadyPicked || r.total == null}
+                    onClick={() =>
+                      handleOuPick(
+                        { id: r.game_id, home: r.home_short, away: r.away_short },
+                        'OVER',
+                        myName || onClock
+                      )
+                    }
+                    title={
+                      !ouPhase ? 'O/U phase not started yet'
+                      : myOuAlreadyPicked ? 'You already made your O/U pick'
+                      : r.total == null ? 'No total available for this game'
+                      : 'Pick OVER'
+                    }
+                  >
+                    OVER {r.total ?? '—'}
+                  </button>
+                  <button
+                    className="border rounded px-2 py-1 text-sm disabled:opacity-40"
+                    disabled={!isMyTurn || !ouPhase || myOuAlreadyPicked || r.total == null}
+                    onClick={() =>
+                      handleOuPick(
+                        { id: r.game_id, home: r.home_short, away: r.away_short },
+                        'UNDER',
+                        myName || onClock
+                      )
+                    }
+                    title={
+                      !ouPhase ? 'O/U phase not started yet'
+                      : myOuAlreadyPicked ? 'You already made your O/U pick'
+                      : r.total == null ? 'No total available for this game'
+                      : 'Pick UNDER'
+                    }
+                  >
+                    UNDER {r.total ?? '—'}
                   </button>
                 </div>
               </div>
