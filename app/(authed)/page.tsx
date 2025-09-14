@@ -301,6 +301,7 @@ export default function ScoreboardPage() {
     setGames(merged);
 
     // 3) Picks  — direct from table, no RPC
+// 3) Picks — direct from table, no RPC
 const { data: sp, error: spErr } = await supabase
   .from('picks')
   .select('pick_number, player_display_name, team_short, spread_at_pick, home_short, away_short')
@@ -310,16 +311,34 @@ const { data: sp, error: spErr } = await supabase
 
 if (spErr) console.error('spread picks fetch error', spErr);
 
+// Define a safe shape for reads (no `any`)
+type PicksSelectRow = {
+  pick_number?: unknown;
+  player_display_name?: unknown;
+  team_short?: unknown;
+  spread_at_pick?: unknown;
+  home_short?: unknown;
+  away_short?: unknown;
+};
+
 const spArr = Array.isArray(sp) ? (sp as unknown[]) : [];
-const spMapped: SpreadPickRow[] = spArr.map((x: any) => ({
-  pick_number: toNumOrNull(x.pick_number) ?? 0,
-  player_display_name: toStr(x.player_display_name),
-  team_short: toStr(x.team_short),
-  spread: toNumOrNull(x.spread_at_pick),
-  home_short: toStr(x.home_short),
-  away_short: toStr(x.away_short),
-}));
+
+const spMapped: SpreadPickRow[] = spArr.map((r) => {
+  const x = r as PicksSelectRow;
+  return {
+    pick_number: toNumOrNull(x.pick_number) ?? 0,
+    player_display_name: toStr(x.player_display_name),
+    team_short: toStr(x.team_short),
+    spread: toNumOrNull(x.spread_at_pick),
+    home_short: toStr(x.home_short),
+    away_short: toStr(x.away_short),
+  };
+});
+
 setSpreadPicks(spMapped);
+
+// OU block can stay as-is (it doesn’t use `any`)
+
 
 // keep OU as-is
 const { data: ou } = await supabase.rpc('get_week_ou_picks_admin', { p_year: YEAR, p_week: w });
