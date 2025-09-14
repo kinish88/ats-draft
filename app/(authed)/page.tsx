@@ -505,24 +505,36 @@ setOuPicks(ouMapped);
     return m;
   }, [games]);
 
-  const picksByPlayer = useMemo(() => {
-    const m = new Map<string, SpreadPickRow[]>();
-    for (const name of PLAYERS_ORDERED) m.set(name, []);
-    for (const p of spreadPicks) {
-      const key = p.player_display_name || 'Unknown';
-      if (!m.has(key)) m.set(key, []);
-      m.get(key)!.push(p);
-    }
-    for (const [, arr] of m) arr.sort((a, b) => (a.pick_number ?? 0) - (b.pick_number ?? 0));
-    return m;
-  }, [spreadPicks]);
+  const norm = (s: string) => s.trim().toLowerCase();
 
-  const ouByPlayer = useMemo(() => {
-    const m = new Map<string, OuPickRow | null>();
-    for (const name of PLAYERS_ORDERED) m.set(name, null);
-    for (const r of ouPicks) m.set(r.player_display_name, r);
-    return m;
-  }, [ouPicks]);
+// spreads
+const picksByPlayer = useMemo(() => {
+  const m = new Map<string, SpreadPickRow[]>();
+  for (const name of PLAYERS_ORDERED) m.set(name, []);
+  for (const p of spreadPicks) {
+    const canonical =
+      (PLAYERS_ORDERED as readonly string[]).find(n => norm(n) === norm(p.player_display_name))
+      ?? p.player_display_name.trim();
+    if (!m.has(canonical)) m.set(canonical, []);
+    m.get(canonical)!.push(p);
+  }
+  for (const [, arr] of m) arr.sort((a,b) => (a.pick_number ?? 0) - (b.pick_number ?? 0));
+  return m;
+}, [spreadPicks]);
+
+// O/U
+const ouByPlayer = useMemo(() => {
+  const m = new Map<string, OuPickRow | null>();
+  for (const name of PLAYERS_ORDERED) m.set(name, null);
+  for (const r of ouPicks) {
+    const canonical =
+      (PLAYERS_ORDERED as readonly string[]).find(n => norm(n) === norm(r.player_display_name))
+      ?? r.player_display_name.trim();
+    m.set(canonical, r);
+  }
+  return m;
+}, [ouPicks]);
+
 
   /* -------------------------------- render -------------------------------- */
 
