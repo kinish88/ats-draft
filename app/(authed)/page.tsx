@@ -354,6 +354,7 @@ const spMapped: SpreadPickRow[] = spArr.map((r) => {
 });
 
 setSpreadPicks(spMapped);
+console.log('spread rows', { week: w, count: spMapped.length, sample: spMapped.slice(0,3) });
 
 // OU block can stay as-is (it doesn’t use `any`)
 
