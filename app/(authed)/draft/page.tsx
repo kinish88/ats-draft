@@ -339,7 +339,7 @@ const isMyTurn = myName != null && onClock === myName;
     const { error } = await supabase.from('picks').insert([
       {
         season_year: YEAR,
-        pick_number: totalPicksSoFar + 1,
+        pick_number: spreadPicksCount + 1, // 1..9 during spread phase
         player_display_name: myName,
         team_short,
         home_short: row.home_short,
