@@ -2,11 +2,19 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import {
+  ATS_ROUNDS,
+  whoIsOnClock,
+  totalAtsPicks,
+  type Player,
+} from '@/lib/draftOrder';
 
 /* ------------------------------- constants ------------------------------- */
 
 const YEAR = 2025;
-const PLAYERS: readonly string[] = ['Big Dawg', 'Pud', 'Kinish'] as const;
+
+// Round-1 order for this league (what you asked for)
+const PLAYERS_R1: readonly string[] = ['Kinish', 'Big Dawg', 'Pud'] as const;
 
 const DEFAULT_PLAYER =
   (process.env.NEXT_PUBLIC_DEFAULT_PLAYER_NAME || '').trim() || null;
@@ -37,16 +45,19 @@ type PickViewRow = {
   picked_team_short: string | null;  // spread pick if not null
   line_at_pick: number | null;       // signed line for spread pick
   total_at_pick: number | null;      // O/U total if not null
-  ou_side?: 'OVER' | 'UNDER' | null; // O/U side (for display)
+  ou_side?: 'OVER' | 'UNDER' | null; // O/U side (display only)
+  // best effort mapping (for disabling OU on already-taken games)
+  game_id_hint?: number | null;
 };
 
-/* --- only for mapping the OU RPC safely --- */
+/* For mapping the OU RPC safely */
 type AdminOuRowUnknown = {
   player?: unknown;
   home_short?: unknown;
   away_short?: unknown;
   pick_side?: unknown;     // 'OVER' | 'UNDER'
   total_at_pick?: unknown; // number
+  game_id?: unknown;       // if your RPC returns it (nice when present)
 };
 
 /* --------------------------------- utils --------------------------------- */
@@ -75,22 +86,10 @@ function fmtSigned(n: number): string {
 }
 const norm = (s: string) => s.trim().toLowerCase();
 
-/* ---------------------------- snake order logic -------------------------- */
-function onClockName(totalPicksSoFar: number, week: number): string {
-  const n = PLAYERS.length;
-  const start = (week - 1) % n;
-  const round = Math.floor(totalPicksSoFar / n);
-  const idxInRound = totalPicksSoFar % n;
-  const forward = round % 2 === 0;
-  const offset = forward ? idxInRound : n - 1 - idxInRound;
-  const playerIdx = (start + offset) % n;
-  return PLAYERS[playerIdx]!;
-}
-
 /* -------------------------------- component ------------------------------- */
 
 export default function DraftPage() {
-  const [week, setWeek] = useState<number>(2); // initial fallback
+  const [week, setWeek] = useState<number>(2); // default view week (overridden by ?week or saved)
 
   // prefer ?week=.., then localStorage
   useEffect(() => {
@@ -216,34 +215,51 @@ export default function DraftPage() {
         line_at_pick: toNumOrNull(o.line_at_pick),
         total_at_pick: toNumOrNull(o.total_at_pick), // usually null in this RPC
         ou_side: null,
+        game_id_hint: Number(toNumOrNull(o.game_id)), // if your RPC exposes it
       };
     });
 
-    // B) O/U picks (pull directly, then coerce to PickViewRow so the feed shows them)
+    // B) O/U picks (admin view; we coerce to the feed shape)
     const { data: ouRaw } = await supabase.rpc('get_week_ou_picks_admin', {
       p_year: YEAR,
       p_week: w,
     });
     const ouArr: unknown[] = Array.isArray(ouRaw) ? (ouRaw as unknown[]) : [];
 
-    // give O/U synthetic pick_numbers so they always sort after spread picks
+    // helper to best-guess a game id for taken flags when RPC doesn't include it
+    const findGameId = (homeShort: string, awayShort: string): number | null => {
+      const item = board.find(
+        (b) =>
+          norm(b.home_short) === norm(homeShort) &&
+          norm(b.away_short) === norm(awayShort)
+      );
+      return item?.game_id ?? null;
+    };
+
     const ouMapped: PickViewRow[] = ouArr.map((r, idx) => {
       const x = r as AdminOuRowUnknown;
       const side: 'OVER' | 'UNDER' =
         toStr(x.pick_side).trim().toUpperCase() === 'UNDER' ? 'UNDER' : 'OVER';
+      const home = toStr(x.home_short);
+      const away = toStr(x.away_short);
+      const gid =
+        Number(toNumOrNull(x.game_id)) ??
+        (findGameId(home, away) ?? null);
+
       return {
-        pick_id: 10_000 + idx,           // synthetic id
+        pick_id: 10_000 + idx,           // synthetic id for list key
         created_at: null,
-        pick_number: 100 + idx,          // after 1..9 in the feed
+        pick_number: 100 + idx,          // sort after 1..9
         season_year: YEAR,
         week_number: w,
         player: toStr(x.player),
-        home_short: toStr(x.home_short),
-        away_short: toStr(x.away_short),
-        picked_team_short: null,         // not a team pick
+        home_short: home,
+        away_short: away,
+        picked_team_short: null,
         line_at_pick: null,
         total_at_pick: toNumOrNull(x.total_at_pick),
         ou_side: side,
+        game_id_hint: gid,
       };
     });
 
@@ -260,6 +276,7 @@ export default function DraftPage() {
   useEffect(() => {
     loadBoard(week);
     loadPicksMerged(week);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [week]);
 
   /* realtime: refresh picks on spreads + O/U; refresh board on scores/lines */
@@ -304,12 +321,21 @@ export default function DraftPage() {
     [picks]
   );
 
-  const ouPhase = spreadPicksCount >= 9;
+  const ouPhase = spreadPicksCount >= totalAtsPicks(PLAYERS_R1.length);
+  const playersR1: Player[] = PLAYERS_R1.map((name) => ({ id: name, display_name: name }));
 
-  // Use the correct counter for the phase to drive turns
-  const picksForTurn = ouPhase ? ouPicksCount : spreadPicksCount;
-  const onClock = onClockName(picksForTurn, week);
-  const isMyTurn = myName != null && onClock === myName;
+  // Build a global current_pick_number compatible with draftOrder.ts
+  const currentPickNumber = ouPhase
+    ? totalAtsPicks(playersR1.length) + ouPicksCount
+    : spreadPicksCount;
+
+  const { phase, player: onClockPlayer } = whoIsOnClock({
+    current_pick_number: currentPickNumber,
+    players: playersR1,
+  });
+
+  const onClock = onClockPlayer.display_name;
+  const isMyTurn = myName != null && norm(onClock) === norm(myName);
 
   // Have I already made my O/U?
   const myOuAlreadyPicked = useMemo(() => {
@@ -318,7 +344,7 @@ export default function DraftPage() {
     return picks.some((p) => p.total_at_pick != null && norm(p.player) === me);
   }, [picks, myName]);
 
-  // Teams already taken (disable buttons)
+  // Teams already taken (disable ATS buttons)
   const pickedTeams = useMemo(() => {
     const s = new Set<string>();
     for (const p of picks) {
@@ -327,13 +353,24 @@ export default function DraftPage() {
     return s;
   }, [picks]);
 
+  // OU games already taken (disable OU buttons); we rely on game_id when we have it
+  const takenOuGameIds = useMemo(() => {
+    const s = new Set<number>();
+    for (const p of picks) {
+      if (p.total_at_pick != null && p.game_id_hint != null) {
+        s.add(p.game_id_hint);
+      }
+    }
+    return s;
+  }, [picks]);
+
   // Group by player for the small scoreboard
   const picksByPlayer = useMemo(() => {
     const map = new Map<string, PickViewRow[]>();
-    for (const name of PLAYERS) map.set(name, []);
+    for (const name of PLAYERS_R1) map.set(name, []);
     for (const p of picks) {
       const key =
-        (((PLAYERS as readonly string[]).find((n) => norm(n) === norm(p.player)) ?? p.player) || 'Unknown');
+        (((PLAYERS_R1 as readonly string[]).find((n) => norm(n) === norm(p.player)) ?? p.player) || 'Unknown');
       const list = map.get(key) ?? [];
       list.push(p);
       map.set(key, list);
@@ -347,7 +384,7 @@ export default function DraftPage() {
   /* ------------------------------- handlers ------------------------------- */
 
   async function makePick(row: BoardRow, team_short: string) {
-    if (!isMyTurn || ouPhase) return;
+    if (!isMyTurn || phase !== 'ats') return;
 
     const teamLine =
       team_short === row.home_short ? row.home_line : row.away_line;
@@ -378,7 +415,8 @@ export default function DraftPage() {
     side: 'OVER' | 'UNDER',
     playerName: string | null
   ) {
-    if (!isMyTurn || !ouPhase || !playerName) return;
+    if (!isMyTurn || phase !== 'ou' || !playerName) return;
+
     const { error } = await supabase.rpc('make_ou_pick_by_shorts', {
       p_year: YEAR,
       p_week: week,
@@ -387,9 +425,17 @@ export default function DraftPage() {
       p_away: game.away,
       p_side: side,
     });
+
     if (error) {
-      console.error('make_ou_pick error', error);
-      alert(`Could not place O/U pick: ${error.message}`);
+      // Friendly messages for your unique constraints
+      const msg = String(error.message || '').toLowerCase();
+      if (msg.includes('uq_ou_picks_week_game')) {
+        alert(`That game's O/U has already been taken.`);
+      } else if (msg.includes('uq_ou_picks_player_week')) {
+        alert(`You already made your O/U pick this week.`);
+      } else {
+        alert(`Could not place O/U pick: ${error.message}`);
+      }
     } else {
       loadPicksMerged(week);
     }
@@ -539,7 +585,7 @@ export default function DraftPage() {
         </div>
 
         {/* O/U phase banner */}
-        {ouPhase && (
+        {phase === 'ou' && (
           <div className="text-sm text-amber-400">
             O/U phase started — spread picks are now locked. Make your OVER/UNDER pick.
           </div>
@@ -550,6 +596,8 @@ export default function DraftPage() {
           {board.map((r) => {
             const homeTaken = pickedTeams.has(r.home_short.toUpperCase());
             const awayTaken = pickedTeams.has(r.away_short.toUpperCase());
+            const ouTaken = takenOuGameIds.has(r.game_id);
+
             return (
               <div key={r.game_id} className="border rounded p-3 flex flex-col gap-2">
                 <div className="flex items-center gap-2">
@@ -567,17 +615,29 @@ export default function DraftPage() {
                   {/* Spread buttons */}
                   <button
                     className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                    disabled={!isMyTurn || ouPhase || homeTaken}
+                    disabled={!isMyTurn || phase !== 'ats' || homeTaken}
                     onClick={() => makePick(r, r.home_short)}
-                    title={ouPhase ? 'O/U phase has started' : homeTaken ? 'Already taken' : 'Pick home'}
+                    title={
+                      phase !== 'ats'
+                        ? 'O/U phase has started'
+                        : homeTaken
+                        ? 'Already taken'
+                        : 'Pick home'
+                    }
                   >
                     Pick {r.home_short} ({fmtSigned(r.home_line)})
                   </button>
                   <button
                     className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                    disabled={!isMyTurn || ouPhase || awayTaken}
+                    disabled={!isMyTurn || phase !== 'ats' || awayTaken}
                     onClick={() => makePick(r, r.away_short)}
-                    title={ouPhase ? 'O/U phase has started' : awayTaken ? 'Already taken' : 'Pick away'}
+                    title={
+                      phase !== 'ats'
+                        ? 'O/U phase has started'
+                        : awayTaken
+                        ? 'Already taken'
+                        : 'Pick away'
+                    }
                   >
                     Pick {r.away_short} ({fmtSigned(r.away_line)})
                   </button>
@@ -585,7 +645,7 @@ export default function DraftPage() {
                   {/* O/U buttons */}
                   <button
                     className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                    disabled={!isMyTurn || !ouPhase || myOuAlreadyPicked || r.total == null}
+                    disabled={!isMyTurn || phase !== 'ou' || myOuAlreadyPicked || r.total == null || ouTaken}
                     onClick={() =>
                       handleOuPick(
                         { id: r.game_id, home: r.home_short, away: r.away_short },
@@ -594,17 +654,22 @@ export default function DraftPage() {
                       )
                     }
                     title={
-                      !ouPhase ? 'O/U phase not started yet'
-                      : myOuAlreadyPicked ? 'You already made your O/U pick'
-                      : r.total == null ? 'No total available for this game'
-                      : 'Pick OVER'
+                      phase !== 'ou'
+                        ? 'O/U phase not started yet'
+                        : myOuAlreadyPicked
+                        ? 'You already made your O/U pick'
+                        : r.total == null
+                        ? 'No total available for this game'
+                        : ouTaken
+                        ? 'That game’s O/U is already taken'
+                        : 'Pick OVER'
                     }
                   >
                     OVER {r.total ?? '—'}
                   </button>
                   <button
                     className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                    disabled={!isMyTurn || !ouPhase || myOuAlreadyPicked || r.total == null}
+                    disabled={!isMyTurn || phase !== 'ou' || myOuAlreadyPicked || r.total == null || ouTaken}
                     onClick={() =>
                       handleOuPick(
                         { id: r.game_id, home: r.home_short, away: r.away_short },
@@ -613,10 +678,15 @@ export default function DraftPage() {
                       )
                     }
                     title={
-                      !ouPhase ? 'O/U phase not started yet'
-                      : myOuAlreadyPicked ? 'You already made your O/U pick'
-                      : r.total == null ? 'No total available for this game'
-                      : 'Pick UNDER'
+                      phase !== 'ou'
+                        ? 'O/U phase not started yet'
+                        : myOuAlreadyPicked
+                        ? 'You already made your O/U pick'
+                        : r.total == null
+                        ? 'No total available for this game'
+                        : ouTaken
+                        ? 'That game’s O/U is already taken'
+                        : 'Pick UNDER'
                     }
                   >
                     UNDER {r.total ?? '—'}
