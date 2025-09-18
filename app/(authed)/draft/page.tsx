@@ -293,7 +293,9 @@ const ouPicksCount = useMemo(
 const ouPhase = spreadPicksCount >= 9;
 
 // Drive the turn using the right counter for the phase
-const picksForTurn = ouPhase ? ouPicksCount : spreadPicksCount;
+// continue from spreads into O/U (no restart)
+const picksForTurn = spreadPicksCount + (ouPhase ? ouPicksCount : 0);
+
 const onClock = onClockName(picksForTurn, week);
 const isMyTurn = myName != null && onClock === myName;
 
