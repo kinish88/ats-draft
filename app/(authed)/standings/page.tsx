@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 
@@ -43,8 +43,8 @@ function toStr(x: unknown, def = ''): string {
   return typeof x === 'string' ? x : def;
 }
 function toOu(x: unknown): 'win' | 'loss' | 'push' | null {
-  if (x === 'win' || x === 'loss' || x === 'push') return x;
-  return null;
+  const s = typeof x === 'string' ? x.toLowerCase() : x;
+  return s === 'win' || s === 'loss' || s === 'push' ? s : null;
 }
 function pct(w: number, l: number, p: number) {
   const games = w + l + p;
@@ -57,20 +57,23 @@ export default function SeasonStandingsPage() {
   const [rows, setRows] = useState<
     Array<{ player: string; weekWins: number; w: number; l: number; p: number }>
   >([]);
+  const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-
+  const fetchSeason = useCallback(async () => {
+    setLoading(true);
+    try {
       // 1) Which weeks exist?
-      const { data: weeksRaw } = await supabase.rpc('list_weeks', { p_year: YEAR });
+      const { data: weeksRaw, error: weeksErr } = await supabase.rpc('list_weeks', {
+        p_year: YEAR,
+      });
+      if (weeksErr) {
+        console.error('list_weeks error', weeksErr);
+      }
       const weeksList = Array.isArray(weeksRaw) ? (weeksRaw as unknown[]) : [];
       const weeks: number[] = weeksList
-        .map((w) => {
-          const wr = w as WeekRowUnknown;
-          return typeof wr.week_number === 'number' ? wr.week_number : null;
-        })
-        .filter((n): n is number => n !== null);
+        .map((w) => toNum((w as WeekRowUnknown).week_number, NaN))
+        .filter((n) => Number.isFinite(n))
+        .sort((a, b) => a - b);
 
       // seed totals
       const totals = new Map<string, Totals>();
@@ -78,7 +81,14 @@ export default function SeasonStandingsPage() {
 
       // 2) Iterate week-by-week
       for (const w of weeks) {
-        const { data } = await supabase.rpc('get_week_summary', { p_year: YEAR, p_week: w });
+        const { data, error } = await supabase.rpc('get_week_summary', {
+          p_year: YEAR,
+          p_week: w,
+        });
+        if (error) {
+          console.error('get_week_summary error', { week: w, error });
+          continue;
+        }
         const arr = Array.isArray(data) ? (data as unknown[]) : [];
 
         const summary: WeekSummaryRow[] = arr.map((r) => {
@@ -134,15 +144,65 @@ export default function SeasonStandingsPage() {
       });
 
       setRows(table);
+      setUpdatedAt(new Date());
+    } finally {
       setLoading(false);
-    })();
+    }
   }, []);
+
+  // Initial load + live updates
+  useEffect(() => {
+    fetchSeason();
+
+    // Re-fetch when tab regains focus
+    const onFocus = () => fetchSeason();
+    window.addEventListener('visibilitychange', onFocus);
+    window.addEventListener('focus', onFocus);
+
+    // Supabase realtime subscriptions
+    const channel = supabase
+      .channel('standings-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'picks' }, () =>
+        fetchSeason()
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'ou_picks' }, () =>
+        fetchSeason()
+      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'games' }, () =>
+        fetchSeason()
+      )
+      .subscribe();
+
+    return () => {
+      window.removeEventListener('visibilitychange', onFocus);
+      window.removeEventListener('focus', onFocus);
+      supabase.removeChannel(channel);
+    };
+  }, [fetchSeason]);
+
+  const subtitle = useMemo(() => {
+    if (loading) return 'Loading…';
+    if (!updatedAt) return '';
+    return `Updated ${updatedAt.toLocaleTimeString()}`;
+  }, [loading, updatedAt]);
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Season Standings</h1>
-        <Link href="/"><span className="text-sm opacity-80 hover:opacity-100">← Back</span></Link>
+        <div className="flex items-center gap-3">
+          <span className="text-xs opacity-60">{subtitle}</span>
+          <button
+            onClick={fetchSeason}
+            className="text-xs px-2 py-1 rounded border border-zinc-700 hover:bg-zinc-800"
+            title="Refresh"
+          >
+            Refresh
+          </button>
+          <Link href="/">
+            <span className="text-sm opacity-80 hover:opacity-100">← Back</span>
+          </Link>
+        </div>
       </div>
 
       <div className="overflow-x-auto">
@@ -159,7 +219,11 @@ export default function SeasonStandingsPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td className="py-3 text-zinc-400" colSpan={6}>Loading…</td></tr>
+              <tr>
+                <td className="py-3 text-zinc-400" colSpan={6}>
+                  Loading…
+                </td>
+              </tr>
             ) : (
               rows.map((r) => (
                 <tr key={r.player} className="border-b border-zinc-800">
