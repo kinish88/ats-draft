@@ -4,6 +4,18 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 
+// add near the top of the file (below imports is fine)
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return 'Unknown error';
+  }
+}
+
+
 type Draft = { week_id: number; current_pick_number: number };
 type DraftOrder = { id: number; week_id: number; pick_number: number; player_id: string };
 type OuPick = {
@@ -137,9 +149,10 @@ export default function DraftPage() {
       });
       if (error) throw error;
       // realtime will refresh UI
-    } catch (e: any) {
-      setErrorMsg(e?.message ?? 'Failed to make O/U pick.');
-    } finally {
+} catch (e: unknown) {
+  setErrorMsg(getErrorMessage(e));
+} finally {
+
       setSubmitting(false);
     }
   }, [playerId, weekId]);
