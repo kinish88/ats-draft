@@ -12,8 +12,8 @@ type WeekRow = { week_number: number };
 
 type GameRow = {
   id: number;
-  home: string;
-  away: string;
+  home: string; // team short (e.g., PHI)
+  away: string; // team short (e.g., DAL)
   home_score: number | null;
   away_score: number | null;
   live_home_score: number | null;
@@ -53,8 +53,8 @@ type AdminOuRowUnknown = {
 type SpreadPickRow = {
   pick_number: number;
   player_display_name: string;
-  team_short: string;
-  spread: number | null;
+  team_short: string;     // picked team short
+  spread: number | null;  // signed line for picked team
   home_short: string;
   away_short: string;
 };
@@ -163,7 +163,9 @@ function scoreInfo(
   const home = hasFinal ? game.home_score : hasLive ? game.live_home_score : null;
   const away = hasFinal ? game.away_score : hasLive ? game.live_away_score : null;
 
-  if (home == null || away == null) return { text: '—', isLive: false, isFinal: false };
+  if (home == null || away == null)
+    return { text: '—', isLive: false, isFinal: false };
+
   return {
     text: `${home}–${away}`,
     isLive: Boolean(game.is_live) || (!hasFinal && hasLive),
@@ -186,6 +188,7 @@ function TinyLogo({
     return (
       <span className={`inline-block align-middle ${className || 'w-4 h-4 mr-2'}`} />
     );
+  // Keep <img> to avoid next/image config churn.
   return (
     <img
       alt={alt}
@@ -208,7 +211,7 @@ function StatusPill({ outcome }: { outcome: Outcome }) {
       : outcome === 'win'
       ? 'win'
       : 'loss';
-  return <span className={`${classes}`}>{text}</span>;
+  return <span className={classes}>{text}</span>;
 }
 
 /* --------------------------------- page ---------------------------------- */
@@ -222,15 +225,8 @@ export default function ScoreboardPage() {
   const [showBoard, setShowBoard] = useState(false);
   const [loading, setLoading] = useState(true);
 
-  /* ---------------------- week restore (URL/localStorage) ---------------------- */
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const urlWeek = params.get('week');
-    const saved = localStorage.getItem('ats.week.scoreboard');
-    const initial = (urlWeek ?? saved) && parseInt(urlWeek ?? (saved as string), 10);
-    if (initial && Number.isFinite(initial)) setWeek(initial);
-  }, []);
+  // NEW: block loadWeeks() from overwriting a week restored from URL/localStorage
+  const initWeekRef = useRef(false);
 
   /* ------------------------------ load weeks ------------------------------ */
 
@@ -239,16 +235,17 @@ export default function ScoreboardPage() {
     const arr = Array.isArray(data) ? (data as unknown[]) : [];
     const list = arr
       .map((w) =>
-        w && typeof w === 'object' ? (w as WeekRow).week_number : undefined
+        w && typeof w === 'object'
+          ? (w as WeekRow).week_number
+          : undefined
       )
       .filter((n): n is number => typeof n === 'number')
       .sort((a, b) => a - b);
 
     setWeeks(list.length ? list : Array.from({ length: 18 }, (_, i) => i + 1));
 
-    // If week is still unset, choose a sensible default:
-    if (week === null) {
-      // Prefer latest week that actually has any picks this season
+    // Only choose a default week if we DID NOT restore one earlier.
+    if (week === null && !initWeekRef.current) {
       const { data: lastPick } = await supabase
         .from('picks')
         .select('week_id')
@@ -257,9 +254,7 @@ export default function ScoreboardPage() {
         .limit(1)
         .maybeSingle();
 
-      const def =
-        (lastPick?.week_id as number | undefined) ??
-        (list.length ? list[list.length - 1] : 1);
+      const def = lastPick?.week_id ?? (list.length ? list[list.length - 1] : 1);
       setWeek(def);
     }
   };
@@ -269,7 +264,7 @@ export default function ScoreboardPage() {
   const loadAll = async (w: number) => {
     setLoading(true);
 
-    // 1) Finals via RPC
+    // 1) Base RPC (final scores)
     const { data: base } = await supabase.rpc('get_week_games_for_scoring', {
       p_year: YEAR,
       p_week: w,
@@ -347,7 +342,7 @@ export default function ScoreboardPage() {
 
     setGames(merged);
 
-    // 3) Spread picks — from table (season_year + week_id)
+    // 3) Spread picks — direct from table
     const { data: sp } = await supabase
       .from('picks')
       .select(
@@ -403,30 +398,40 @@ export default function ScoreboardPage() {
     setLoading(false);
   };
 
+  /* --------------------------- restore chosen week ------------------------ */
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlWeek = params.get('week');
+    const saved = localStorage.getItem('ats.week.scoreboard');
+    const candidateStr = urlWeek ?? saved ?? '';
+    const v = parseInt(candidateStr, 10);
+    if (Number.isFinite(v) && v > 0) {
+      initWeekRef.current = true; // <- prevents loadWeeks() default override
+      setWeek(v);
+    }
+  }, []);
+
+  /* -------------------------------- effects ------------------------------- */
+
   useEffect(() => {
     loadWeeks();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (week != null) loadAll(week);
   }, [week]);
 
-  // persist week to URL + localStorage
-  useEffect(() => {
-    if (week == null) return;
-    localStorage.setItem('ats.week.scoreboard', String(week));
-    const params = new URLSearchParams(window.location.search);
-    params.set('week', String(week));
-    window.history.replaceState({}, '', `?${params.toString()}`);
-  }, [week]);
-
   /* ------------------------------ realtime live --------------------------- */
 
+  // keep a stable Set of the game IDs currently on screen
   const idSetRef = useRef<Set<number>>(new Set());
   useEffect(() => {
     idSetRef.current = new Set(games.map((g) => g.id));
   }, [games]);
 
+  // Subscribe ONCE to games updates
   useEffect(() => {
     const chan = supabase
       .channel('live-games')
@@ -441,14 +446,30 @@ export default function ScoreboardPage() {
           const n = {
             home: typeof u?.home === 'string' ? (u.home as string) : undefined,
             away: typeof u?.away === 'string' ? (u.away as string) : undefined,
-            home_score: typeof u?.home_score === 'number' ? (u.home_score as number) : undefined,
-            away_score: typeof u?.away_score === 'number' ? (u.away_score as number) : undefined,
+            home_score:
+              typeof u?.home_score === 'number'
+                ? (u.home_score as number)
+                : undefined,
+            away_score:
+              typeof u?.away_score === 'number'
+                ? (u.away_score as number)
+                : undefined,
             live_home_score:
-              typeof u?.live_home_score === 'number' ? (u.live_home_score as number) : undefined,
+              typeof u?.live_home_score === 'number'
+                ? (u.live_home_score as number)
+                : undefined,
             live_away_score:
-              typeof u?.live_away_score === 'number' ? (u.live_away_score as number) : undefined,
-            is_final: typeof u?.is_final === 'boolean' ? (u.is_final as boolean) : undefined,
-            is_live: typeof u?.is_live === 'boolean' ? (u.is_live as boolean) : undefined,
+              typeof u?.live_away_score === 'number'
+                ? (u.live_away_score as number)
+                : undefined,
+            is_final:
+              typeof u?.is_final === 'boolean'
+                ? (u.is_final as boolean)
+                : undefined,
+            is_live:
+              typeof u?.is_live === 'boolean'
+                ? (u.is_live as boolean)
+                : undefined,
           };
 
           setGames((prev) =>
@@ -456,23 +477,16 @@ export default function ScoreboardPage() {
               g.id === id
                 ? {
                     ...g,
-                    home: typeof n.home === 'string' ? n.home : g.home,
-                    away: typeof n.away === 'string' ? n.away : g.away,
-                    home_score:
-                      typeof n.home_score === 'number' ? n.home_score : g.home_score,
-                    away_score:
-                      typeof n.away_score === 'number' ? n.away_score : g.away_score,
-                    live_home_score:
-                      typeof n.live_home_score === 'number'
-                        ? n.live_home_score
-                        : g.live_home_score,
-                    live_away_score:
-                      typeof n.live_away_score === 'number'
-                        ? n.live_away_score
-                        : g.live_away_score,
+                    home: n.home ?? g.home,
+                    away: n.away ?? g.away,
+                    home_score: n.home_score ?? g.home_score,
+                    away_score: n.away_score ?? g.away_score,
+                    live_home_score: n.live_home_score ?? g.live_home_score,
+                    live_away_score: n.live_away_score ?? g.live_away_score,
                     is_final:
                       typeof n.is_final === 'boolean' ? n.is_final : g.is_final,
-                    is_live: typeof n.is_live === 'boolean' ? n.is_live : g.is_live,
+                    is_live:
+                      typeof n.is_live === 'boolean' ? n.is_live : g.is_live,
                   }
                 : g
             )
@@ -486,12 +500,12 @@ export default function ScoreboardPage() {
     };
   }, []);
 
-  // Poll backup (15s)
+  // Fallback: poll every 15s (re-created when week changes)
   useEffect(() => {
     let cancelled = false;
     if (!games.length) return;
-    const ids = games.map((g) => g.id);
 
+    const ids = games.map((g) => g.id);
     const tick = async () => {
       const { data } = await supabase
         .from('games')
@@ -518,9 +532,13 @@ export default function ScoreboardPage() {
             home: typeof r.home === 'string' ? (r.home as string) : g.home,
             away: typeof r.away === 'string' ? (r.away as string) : g.away,
             home_score:
-              typeof r.home_score === 'number' ? (r.home_score as number) : g.home_score,
+              typeof r.home_score === 'number'
+                ? (r.home_score as number)
+                : g.home_score,
             away_score:
-              typeof r.away_score === 'number' ? (r.away_score as number) : g.away_score,
+              typeof r.away_score === 'number'
+                ? (r.away_score as number)
+                : g.away_score,
             live_home_score:
               typeof r.live_home_score === 'number'
                 ? (r.live_home_score as number)
@@ -530,7 +548,9 @@ export default function ScoreboardPage() {
                 ? (r.live_away_score as number)
                 : g.live_away_score,
             is_final:
-              typeof r.is_final === 'boolean' ? (r.is_final as boolean) : g.is_final,
+              typeof r.is_final === 'boolean'
+                ? (r.is_final as boolean)
+                : g.is_final,
             is_live:
               typeof r.is_live === 'boolean' ? (r.is_live as boolean) : g.is_live,
           };
@@ -595,6 +615,7 @@ export default function ScoreboardPage() {
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
+      {/* styles for live flash + final bold */}
       <style jsx global>{`
         @keyframes scoreFlash {
           0%,
@@ -625,7 +646,15 @@ export default function ScoreboardPage() {
             <select
               className="border rounded p-1 bg-transparent"
               value={week ?? (weeks.length ? Math.max(...weeks) : 1)}
-              onChange={(e) => setWeek(parseInt(e.target.value, 10))}
+              onChange={(e) => {
+                const w = parseInt(e.target.value, 10);
+                setWeek(w);
+                // persist for refreshes and deep links
+                localStorage.setItem('ats.week.scoreboard', String(w));
+                const params = new URLSearchParams(window.location.search);
+                params.set('week', String(w));
+                window.history.replaceState({}, '', `?${params.toString()}`);
+              }}
             >
               {weeks.map((w) => (
                 <option key={w} value={w}>
@@ -666,11 +695,7 @@ export default function ScoreboardPage() {
                     {rows.map((r, idx) => {
                       const pairKey = `${r.home_short}-${r.away_short}`;
                       const g = gameByPair.get(pairKey);
-                      const outcome = pickOutcomeATS(
-                        g,
-                        r.team_short,
-                        r.spread ?? null
-                      );
+                      const outcome = pickOutcomeATS(g, r.team_short, r.spread);
                       const s = scoreInfo(g);
 
                       return (
@@ -679,10 +704,7 @@ export default function ScoreboardPage() {
                           className="flex items-center justify-between"
                         >
                           <div className="flex items-center gap-3">
-                            <TinyLogo
-                              url={teamLogo(r.team_short)}
-                              alt={r.team_short}
-                            />
+                            <TinyLogo url={teamLogo(r.team_short)} alt={r.team_short} />
                             <span className="font-semibold">{r.team_short}</span>
                             <span className="text-zinc-400 text-sm">
                               ({matchup(r.home_short, r.away_short)})
@@ -690,16 +712,10 @@ export default function ScoreboardPage() {
                           </div>
 
                           <div className="flex items-center gap-4">
-                            <span className="w-12 text-right">
-                              {signed(r.spread)}
-                            </span>
+                            <span className="w-12 text-right">{signed(r.spread)}</span>
                             <span
                               className={`tabular-nums text-sm text-zinc-300 ${
-                                s.isLive
-                                  ? 'score-live'
-                                  : s.isFinal
-                                  ? 'score-final'
-                                  : ''
+                                s.isLive ? 'score-live' : s.isFinal ? 'score-final' : ''
                               }`}
                             >
                               {s.text}
@@ -726,10 +742,7 @@ export default function ScoreboardPage() {
 
           if (!r) {
             return (
-              <div
-                key={name}
-                className="border rounded p-3 text-sm text-zinc-400"
-              >
+              <div key={name} className="border rounded p-3 text-sm text-zinc-400">
                 {name}
               </div>
             );
