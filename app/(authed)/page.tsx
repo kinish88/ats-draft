@@ -757,16 +757,16 @@ export default function ScoreboardPage() {
               key={name}
               className="border rounded p-3 flex items-center justify-between"
             >
-              <div className="flex items-center gap-3">
-                <TinyLogo url={teamLogo(r.home_short)} alt={r.home_short} />
-                <TinyLogo url={teamLogo(r.away_short)} alt={r.away_short} />
-                <span className="font-semibold">{name}</span>
-                <span className="text-zinc-300">
-                  {matchup(r.home_short, r.away_short)}
-                </span>
-                <span className="ml-3">{r.ou_choice}</span>
-                <span className="ml-1">{r.ou_total}</span>
-              </div>
+                     <div className="flex items-center gap-3">
+          <TinyLogo url={nflLogo} alt="NFL" />
+          <span className="font-semibold">{name}</span>
+          <span className="text-zinc-300">
+            {matchup(r.home_short, r.away_short)}
+          </span>
+          <span className="ml-3">{r.ou_choice}</span>
+          <span className="ml-1">{r.ou_total}</span>
+        </div>
+
               <div className="flex items-center gap-4">
                 <span
                   className={`tabular-nums text-sm text-zinc-300 ${
