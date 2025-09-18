@@ -21,8 +21,8 @@ type BoardRow = {
   game_id: number;
   home_short: string;
   away_short: string;
-  home_line: number; // signed for HOME (PK=0)
-  away_line: number; // signed for AWAY (PK=0)
+  home_line: number;
+  away_line: number;
   total: number | null;
 };
 
@@ -35,9 +35,18 @@ type PickViewRow = {
   player: string;
   home_short: string;
   away_short: string;
-  picked_team_short: string | null;
-  line_at_pick: number | null;
-  total_at_pick: number | null;
+  picked_team_short: string | null; // spread pick if not null
+  line_at_pick: number | null;      // signed line for spread pick
+  total_at_pick: number | null;     // O/U pick if not null
+};
+
+/* --- only for mapping the ou RPC safely --- */
+type AdminOuRowUnknown = {
+  player?: unknown;
+  home_short?: unknown;
+  away_short?: unknown;
+  pick_side?: unknown;     // 'OVER' | 'UNDER'
+  total_at_pick?: unknown; // number
 };
 
 /* --------------------------------- utils --------------------------------- */
@@ -64,11 +73,12 @@ function fmtSigned(n: number): string {
   if (n === 0) return 'Pick Em';
   return n > 0 ? `+${n}` : `${n}`;
 }
+const norm = (s: string) => s.trim().toLowerCase();
 
 /* ---------------------------- snake order logic -------------------------- */
 function onClockName(totalPicksSoFar: number, week: number): string {
   const n = PLAYERS.length;
-  const start = (week - 1) % n; // Week 1 starts PLAYERS[0], Week 2 starts PLAYERS[1], etc.
+  const start = (week - 1) % n;
   const round = Math.floor(totalPicksSoFar / n);
   const idxInRound = totalPicksSoFar % n;
   const forward = round % 2 === 0;
@@ -82,14 +92,14 @@ function onClockName(totalPicksSoFar: number, week: number): string {
 export default function DraftPage() {
   const [week, setWeek] = useState<number>(2); // initial fallback
 
-// On mount: prefer ?week=.., then localStorage, else keep current
-useEffect(() => {
-  const params = new URLSearchParams(window.location.search);
-  const urlWeek = params.get('week');
-  const saved = localStorage.getItem('ats.week');
-  const next = urlWeek ?? saved;
-  if (next) setWeek(parseInt(next, 10));
-}, []);
+  // prefer ?week=.., then localStorage
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlWeek = params.get('week');
+    const saved = localStorage.getItem('ats.week');
+    const next = urlWeek ?? saved;
+    if (next) setWeek(parseInt(next, 10));
+  }, []);
 
   const [board, setBoard] = useState<BoardRow[]>([]);
   const [picks, setPicks] = useState<PickViewRow[]>([]);
@@ -127,7 +137,7 @@ useEffect(() => {
       const home = toStr(o.home_short);
       const away = toStr(o.away_short);
 
-      // 1) Best: already-signed per-team numbers (support multiple possible column names)
+      // prefer already-signed per-team numbers
       let hLine =
         toNumOrNull(o.home_line) ??
         toNumOrNull(o.home_spread) ??
@@ -137,9 +147,9 @@ useEffect(() => {
         toNumOrNull(o.away_spread) ??
         toNumOrNull(o.spread_away);
 
-      // 2) If not present, derive sign from favorite info + one spread number
+      // derive sign if needed
       if (hLine == null || aLine == null) {
-        const raw = toNumOrNull(o.spread); // could be +/- or abs
+        const raw = toNumOrNull(o.spread);
         const favShort = toStr(o.favorite_short, '').toUpperCase();
         const favIsHome: boolean | null =
           favShort
@@ -159,14 +169,12 @@ useEffect(() => {
             hLine = +mag;
             aLine = -mag;
           } else {
-            // Last-ditch fallback: assume value is home-signed (old behavior)
             hLine = raw;
             aLine = -raw;
           }
         }
       }
 
-      // 3) Final fallback
       if (hLine == null || aLine == null) {
         hLine = 0;
         aLine = 0;
@@ -185,20 +193,20 @@ useEffect(() => {
     setBoard(mapped);
   }
 
-  /* load picks (RPC view) */
-  async function loadPicks(w: number) {
+  /* load picks (spread + O/U) */
+  async function loadPicksMerged(w: number) {
+    // A) spread picks
     const { data } = await supabase.rpc('get_week_picks', {
       p_year: YEAR,
       p_week: w,
     });
-
-    const arr: unknown[] = Array.isArray(data) ? (data as unknown[]) : [];
-    const mapped: PickViewRow[] = arr.map((r) => {
+    const spreadArr: unknown[] = Array.isArray(data) ? (data as unknown[]) : [];
+    const spreadMapped: PickViewRow[] = spreadArr.map((r) => {
       const o = asRec(r);
       return {
         pick_id: Number(o.pick_id ?? 0),
         created_at: toStr(o.created_at, null as unknown as string),
-        pick_number: Number(toNumOrNull(o.pick_number) ?? 0),
+        pick_number: Number(toNumOrNull(o.pick_number) ?? 0), // 1..9
         season_year: Number(toNumOrNull(o.season_year) ?? YEAR),
         week_number: Number(toNumOrNull(o.week_number) ?? w),
         player: toStr(o.player),
@@ -206,107 +214,123 @@ useEffect(() => {
         away_short: toStr(o.away_short),
         picked_team_short: toStr(o.picked_team_short, '') || null,
         line_at_pick: toNumOrNull(o.line_at_pick),
-        total_at_pick: toNumOrNull(o.total_at_pick),
+        total_at_pick: toNumOrNull(o.total_at_pick), // usually null in this RPC
       };
     });
 
-    // keep stable order
-    mapped.sort((a, b) =>
+    // B) O/U picks (pull directly, then coerce to PickViewRow so the feed shows them)
+    const { data: ouRaw } = await supabase.rpc('get_week_ou_picks_admin', {
+      p_year: YEAR,
+      p_week: w,
+    });
+    const ouArr: unknown[] = Array.isArray(ouRaw) ? (ouRaw as unknown[]) : [];
+
+    // give O/U synthetic pick_numbers so they always sort after spread picks
+    const ouMapped: PickViewRow[] = ouArr.map((r, idx) => {
+      const x = r as AdminOuRowUnknown;
+      const side = toStr(x.pick_side).trim().toUpperCase(); // 'OVER'|'UNDER'
+      const labelTeam = side === 'UNDER' ? 'UNDER' : 'OVER';
+      return {
+        pick_id: 10_000 + idx,           // synthetic id
+        created_at: null,
+        pick_number: 100 + idx,          // after 1..9 in the feed
+        season_year: YEAR,
+        week_number: w,
+        player: toStr(x.player),
+        home_short: toStr(x.home_short),
+        away_short: toStr(x.away_short),
+        picked_team_short: null,         // not a team pick
+        line_at_pick: null,
+        total_at_pick: toNumOrNull(x.total_at_pick), // this is what we key on
+      };
+    });
+
+    // C) merge + stable sort
+    const merged = [...spreadMapped, ...ouMapped].sort((a, b) =>
       a.pick_number === b.pick_number
         ? (a.created_at ?? '').localeCompare(b.created_at ?? '')
         : a.pick_number - b.pick_number
     );
 
-    setPicks(mapped);
+    setPicks(merged);
   }
 
   useEffect(() => {
     loadBoard(week);
-    loadPicks(week);
+    loadPicksMerged(week);
   }, [week]);
 
   /* realtime: refresh picks on spreads + O/U; refresh board on scores/lines */
-useEffect(() => {
-  const ch = supabase
-    .channel('draft-live')
-    // Spread picks
-    .on(
-      'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'picks' },
-      (_payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
-        // new spread pick → refresh the list for this week
-        loadPicks(week);
-      }
-    )
-    // O/U picks (insert or upsert)
-    .on(
-      'postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'ou_picks' },
-      (_payload) => {
-        loadPicks(week);
-      }
-    )
-    .on(
-      'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'ou_picks' },
-      (_payload) => {
-        loadPicks(week);
-      }
-    )
-    // Live scores and line/total changes → refresh the board
-    .on(
-      'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'games' },
-      (_payload) => {
-        loadBoard(week);
-      }
-    )
-    .on(
-      'postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'game_lines' },
-      (_payload) => {
-        loadBoard(week);
-      }
-    )
-    .subscribe();
+  useEffect(() => {
+    const ch = supabase
+      .channel('draft-live')
+      // Spread picks
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'picks' },
+        (_payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
+          loadPicksMerged(week);
+        }
+      )
+      // O/U picks
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'ou_picks' },
+        () => loadPicksMerged(week)
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'ou_picks' },
+        () => loadPicksMerged(week)
+      )
+      // Board refreshers
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'games' },
+        () => loadBoard(week)
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'game_lines' },
+        () => loadBoard(week)
+      )
+      .subscribe();
 
-  return () => {
-    void supabase.removeChannel(ch);
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [week]);
+    return () => {
+      void supabase.removeChannel(ch);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [week]);
 
+  /* ------------------------------ derived -------------------------------- */
 
-/* derived */
-
-// Count picks by type
-const spreadPicksCount = useMemo(
-  () => picks.filter(p => p.picked_team_short != null).length,
-  [picks]
-);
-const ouPicksCount = useMemo(
-  () => picks.filter(p => p.total_at_pick != null).length,
-  [picks]
-);
-
-// O/U phase starts after 9 spread picks
-const ouPhase = spreadPicksCount >= 9;
-
-// Drive the turn using the right counter for the phase
-// continue from spreads into O/U (no restart)
-const picksForTurn = spreadPicksCount + (ouPhase ? ouPicksCount : 0);
-
-const onClock = onClockName(picksForTurn, week);
-const isMyTurn = myName != null && onClock === myName;
-
-
-  // Has this user already made their O/U pick this week?
-  const myOuAlreadyPicked = useMemo(
-    () => myName != null && picks.some(p => p.player === myName && p.total_at_pick != null),
-    [picks, myName]
+  // Count by type from the merged list
+  const spreadPicksCount = useMemo(
+    () => picks.filter((p) => p.picked_team_short != null).length,
+    [picks]
+  );
+  const ouPicksCount = useMemo(
+    () => picks.filter((p) => p.total_at_pick != null).length,
+    [picks]
   );
 
-  // Set of teams already picked this week (disable those spread buttons)
+  const ouPhase = spreadPicksCount >= 9;
+
+  // Use the correct counter for the phase to drive turns
+  const picksForTurn = ouPhase ? ouPicksCount : spreadPicksCount;
+  const onClock = onClockName(picksForTurn, week);
+  const isMyTurn = myName != null && onClock === myName;
+
+  // Have I already made my O/U?
+  const myOuAlreadyPicked = useMemo(() => {
+    if (!myName) return false;
+    const me = norm(myName);
+    return picks.some(
+      (p) => p.total_at_pick != null && norm(p.player) === me
+    );
+  }, [picks, myName]);
+
+  // Teams already taken (disable buttons)
   const pickedTeams = useMemo(() => {
     const s = new Set<string>();
     for (const p of picks) {
@@ -315,12 +339,15 @@ const isMyTurn = myName != null && onClock === myName;
     return s;
   }, [picks]);
 
-  // Group by player (for the small scoreboard view)
+  // Group by player for the small scoreboard
   const picksByPlayer = useMemo(() => {
     const map = new Map<string, PickViewRow[]>();
     for (const name of PLAYERS) map.set(name, []);
     for (const p of picks) {
-      const key = p.player || 'Unknown';
+      const key =
+        (PLAYERS as readonly string[]).find((n) => norm(n) === norm(p.player)) ??
+        p.player ||
+        'Unknown';
       const list = map.get(key) ?? [];
       list.push(p);
       map.set(key, list);
@@ -331,17 +358,17 @@ const isMyTurn = myName != null && onClock === myName;
     return Array.from(map.entries());
   }, [picks]);
 
-  /* handlers */
+  /* ------------------------------- handlers ------------------------------- */
 
   async function makePick(row: BoardRow, team_short: string) {
-    if (!isMyTurn || ouPhase) return; // lock spreads once O/U phase starts
+    if (!isMyTurn || ouPhase) return;
 
-    const teamLine = team_short === row.home_short ? row.home_line : row.away_line;
+    const teamLine =
+      team_short === row.home_short ? row.home_line : row.away_line;
 
     const { error } = await supabase.from('picks').insert([
       {
         season_year: YEAR,
-        week_number: week,                   // <-- add this
         pick_number: spreadPicksCount + 1, // 1..9 during spread phase
         player_display_name: myName,
         team_short,
@@ -357,7 +384,7 @@ const isMyTurn = myName != null && onClock === myName;
       return;
     }
 
-    loadPicks(week);
+    loadPicksMerged(week);
   }
 
   async function handleOuPick(
@@ -378,11 +405,11 @@ const isMyTurn = myName != null && onClock === myName;
       console.error('make_ou_pick error', error);
       alert(`Could not place O/U pick: ${error.message}`);
     } else {
-      loadPicks(week);
+      loadPicksMerged(week);
     }
   }
 
-  /* render */
+  /* -------------------------------- render -------------------------------- */
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
@@ -393,15 +420,14 @@ const isMyTurn = myName != null && onClock === myName;
           <select
             className="border rounded p-1 bg-transparent"
             value={week}
-           onChange={(e) => {
-  const w = parseInt(e.target.value, 10);
-  setWeek(w);
-  localStorage.setItem('ats.week', String(w));
-  const params = new URLSearchParams(window.location.search);
-  params.set('week', String(w));
-  window.history.replaceState({}, '', `?${params.toString()}`);
-}}
-
+            onChange={(e) => {
+              const w = parseInt(e.target.value, 10);
+              setWeek(w);
+              localStorage.setItem('ats.week', String(w));
+              const params = new URLSearchParams(window.location.search);
+              params.set('week', String(w));
+              window.history.replaceState({}, '', `?${params.toString()}`);
+            }}
           >
             {Array.from({ length: 18 }, (_, i) => i + 1).map((w) => (
               <option key={w} value={w}>
@@ -464,13 +490,27 @@ const isMyTurn = myName != null && onClock === myName;
               <li className="px-3 py-2 text-zinc-400">No picks yet.</li>
             ) : (
               picks.map((p) => {
-                const line =
-                  p.line_at_pick == null ? 'Pick Em' : fmtSigned(p.line_at_pick);
+                const isSpread = p.picked_team_short != null;
+                const line = isSpread
+                  ? p.line_at_pick == null
+                    ? 'Pick Em'
+                    : fmtSigned(p.line_at_pick)
+                  : p.total_at_pick != null
+                  ? (p.total_at_pick as number).toString()
+                  : '';
+
                 return (
-                  <li key={p.pick_id} className="px-3 py-2">
-                    <strong>{p.player}</strong> picked{' '}
-                    <strong>{p.picked_team_short ?? '—'}</strong>{' '}
-                    ({line}) — {p.home_short} v {p.away_short}
+                  <li key={`${p.pick_id}-${p.pick_number}`} className="px-3 py-2">
+                    <strong>{p.player}</strong>{' '}
+                    {isSpread ? (
+                      <>
+                        picked <strong>{p.picked_team_short}</strong> ({line}) — {p.home_short} v {p.away_short}
+                      </>
+                    ) : (
+                      <>
+                        O/U — <strong>{p.home_short} v {p.away_short}</strong> total {line}
+                      </>
+                    )}
                   </li>
                 );
               })
@@ -488,12 +528,25 @@ const isMyTurn = myName != null && onClock === myName;
               ) : (
                 <ul className="text-sm space-y-1">
                   {list.map((p) => (
-                    <li key={p.pick_id}>
-                      {p.picked_team_short ?? '—'}{' '}
-                      <span className="text-zinc-400">
-                        {p.line_at_pick != null ? `(${fmtSigned(p.line_at_pick)})` : ''} —{' '}
-                        {p.home_short} v {p.away_short}
-                      </span>
+                    <li key={`${player}-${p.pick_id}-${p.pick_number}`}>
+                      {p.picked_team_short
+                        ? (
+                          <>
+                            {p.picked_team_short}{' '}
+                            <span className="text-zinc-400">
+                              {p.line_at_pick != null ? `(${fmtSigned(p.line_at_pick)})` : ''} — {p.home_short} v {p.away_short}
+                            </span>
+                          </>
+                        )
+                        : (
+                          <>
+                            O/U{' '}
+                            <span className="text-zinc-400">
+                              {p.home_short} v {p.away_short} — {p.total_at_pick ?? '—'}
+                            </span>
+                          </>
+                        )
+                      }
                     </li>
                   ))}
                 </ul>
@@ -528,7 +581,7 @@ const isMyTurn = myName != null && onClock === myName;
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {/* Spread buttons: lock during O/U phase */}
+                  {/* Spread buttons */}
                   <button
                     className="border rounded px-2 py-1 text-sm disabled:opacity-40"
                     disabled={!isMyTurn || ouPhase || homeTaken}
@@ -546,7 +599,7 @@ const isMyTurn = myName != null && onClock === myName;
                     Pick {r.away_short} ({fmtSigned(r.away_line)})
                   </button>
 
-                  {/* O/U buttons: enabled during O/U phase, once per player, total required */}
+                  {/* O/U buttons */}
                   <button
                     className="border rounded px-2 py-1 text-sm disabled:opacity-40"
                     disabled={!isMyTurn || !ouPhase || myOuAlreadyPicked || r.total == null}
