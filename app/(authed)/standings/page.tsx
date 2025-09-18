@@ -89,7 +89,7 @@ export default function SeasonStandingsPage() {
       // 2) Iterate week-by-week
       for (const w of weeks) {
         // If you didn’t deploy v2 yet, change to 'get_week_summary'
-        const { data, error } = await supabase.rpc('get_week_summary_v2', {
+        const { data, error } = await supabase.rpc('get_week_summary', {
           p_year: YEAR,
           p_week: w,
         });
