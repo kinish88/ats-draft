@@ -7,6 +7,10 @@ import { supabase } from '@/lib/supabaseClient';
 const YEAR = 2025;
 const PLAYERS = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
+/* ------------------------------- types ------------------------------- */
+
+type WeekRow = { week_number: number };
+
 type WeekSummaryRow = {
   display_name: string;
   spread_wins: number;
@@ -30,6 +34,8 @@ type Totals = {
   p: number;
 };
 
+/* ----------------------------- utilities ---------------------------- */
+
 function toNum(x: unknown, def = 0): number {
   if (typeof x === 'number') return Number.isFinite(x) ? x : def;
   if (typeof x === 'string') {
@@ -51,6 +57,8 @@ function pct(w: number, l: number, p: number) {
   return `${((w / games) * 100).toFixed(1)}%`;
 }
 
+/* ------------------------------ component --------------------------- */
+
 export default function SeasonStandingsPage() {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<
@@ -61,7 +69,7 @@ export default function SeasonStandingsPage() {
   const fetchSeason = useCallback(async () => {
     setLoading(true);
     try {
-      // 1) Weeks: read directly from table for the season
+      // 1) Weeks: read directly from table for the season (no 'any')
       const { data: weeksRaw, error: weeksErr } = await supabase
         .from('weeks')
         .select('week_number')
@@ -71,15 +79,16 @@ export default function SeasonStandingsPage() {
       if (weeksErr) console.error('weeks select error', weeksErr);
 
       const weeks: number[] = (weeksRaw ?? [])
-        .map((w: any) => Number(w.week_number))
-        .filter((n) => Number.isFinite(n));
+        .map((w: WeekRow) => w.week_number)
+        .filter((n: number) => Number.isFinite(n));
 
       // Seed totals
       const totals = new Map<string, Totals>();
       for (const name of PLAYERS) totals.set(name, { weekWins: 0, w: 0, l: 0, p: 0 });
 
-      // 2) Iterate week-by-week using the new RPC
+      // 2) Iterate week-by-week
       for (const w of weeks) {
+        // If you didn’t deploy v2 yet, change to 'get_week_summary'
         const { data, error } = await supabase.rpc('get_week_summary_v2', {
           p_year: YEAR,
           p_week: w,
