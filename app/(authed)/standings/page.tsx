@@ -15,7 +15,6 @@ type WeekSummaryRow = {
   ou_result: 'win' | 'loss' | 'push' | null;
 };
 
-type WeekRowUnknown = { week_number?: unknown };
 type WeekSummaryUnknown = {
   display_name?: unknown;
   spread_wins?: unknown;
@@ -62,31 +61,31 @@ export default function SeasonStandingsPage() {
   const fetchSeason = useCallback(async () => {
     setLoading(true);
     try {
-      // 1) Which weeks exist?
-      const { data: weeksRaw, error: weeksErr } = await supabase.rpc('list_weeks', {
-        p_year: YEAR,
-      });
-      if (weeksErr) {
-        console.error('list_weeks error', weeksErr);
-      }
-      const weeksList = Array.isArray(weeksRaw) ? (weeksRaw as unknown[]) : [];
-      const weeks: number[] = weeksList
-        .map((w) => toNum((w as WeekRowUnknown).week_number, NaN))
-        .filter((n) => Number.isFinite(n))
-        .sort((a, b) => a - b);
+      // 1) Weeks: read directly from table for the season
+      const { data: weeksRaw, error: weeksErr } = await supabase
+        .from('weeks')
+        .select('week_number')
+        .eq('season_year', YEAR)
+        .order('week_number', { ascending: true });
 
-      // seed totals
+      if (weeksErr) console.error('weeks select error', weeksErr);
+
+      const weeks: number[] = (weeksRaw ?? [])
+        .map((w: any) => Number(w.week_number))
+        .filter((n) => Number.isFinite(n));
+
+      // Seed totals
       const totals = new Map<string, Totals>();
       for (const name of PLAYERS) totals.set(name, { weekWins: 0, w: 0, l: 0, p: 0 });
 
-      // 2) Iterate week-by-week
+      // 2) Iterate week-by-week using the new RPC
       for (const w of weeks) {
-        const { data, error } = await supabase.rpc('get_week_summary', {
+        const { data, error } = await supabase.rpc('get_week_summary_v2', {
           p_year: YEAR,
           p_week: w,
         });
         if (error) {
-          console.error('get_week_summary error', { week: w, error });
+          console.error('get_week_summary_v2 error', { week: w, error });
           continue;
         }
         const arr = Array.isArray(data) ? (data as unknown[]) : [];
@@ -154,12 +153,10 @@ export default function SeasonStandingsPage() {
   useEffect(() => {
     fetchSeason();
 
-    // Re-fetch when tab regains focus
     const onFocus = () => fetchSeason();
     window.addEventListener('visibilitychange', onFocus);
     window.addEventListener('focus', onFocus);
 
-    // Supabase realtime subscriptions
     const channel = supabase
       .channel('standings-live')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'picks' }, () =>
