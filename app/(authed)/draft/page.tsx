@@ -1,56 +1,32 @@
-// app/draft/page.tsx
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 
-type Draft = {
-  week_id: number;
-  current_pick_number: number;
-};
-
-type DraftOrder = {
-  id: number;
-  week_id: number;
-  pick_number: number;   // seat # (1..N)
-  player_id: string;     // auth uid
-};
-
+type Draft = { week_id: number; current_pick_number: number };
+type DraftOrder = { id: number; week_id: number; pick_number: number; player_id: string };
 type OuPick = {
-  id: number;
-  week_id: number;
-  player_id: string;
-  game_id: number;
-  pick_side: 'over' | 'under';
-  total_at_pick: number;
-  created_at: string;
+  id: number; week_id: number; player_id: string; game_id: number;
+  pick_side: 'over' | 'under'; total_at_pick: number; created_at: string;
 };
-
-type GameCard = {
-  game_id: number;
-  label: string;        // e.g. "BUF v MIA"
-  total: number;        // current total to snapshot
-};
+type GameCard = { game_id: number; label: string; total: number };
 
 export default function DraftPage() {
   const router = useRouter();
   const params = useSearchParams();
 
-  // ---------- Week selection (URL is source of truth, with localStorage fallback)
+  // ---------- Week selection (URL is source of truth, localStorage fallback)
   const [weekId, setWeekId] = useState<number | null>(null);
-
   useEffect(() => {
     const urlWeek = params.get('week');
     const saved = typeof window !== 'undefined' ? localStorage.getItem('ats.week') : null;
-
     if (urlWeek) {
       setWeekId(Number(urlWeek));
     } else if (saved) {
       setWeekId(Number(saved));
       router.replace(`?week=${saved}`, { scroll: false });
     } else {
-      // Default if nothing is set; change if you have an "active week" setting
       setWeekId(3);
       router.replace(`?week=3`, { scroll: false });
     }
@@ -62,6 +38,13 @@ export default function DraftPage() {
     router.replace(`?week=${w}`, { scroll: false });
   }, [router]);
 
+  // ---------- Auth (player_id must match draft_order.player_id)
+  const [playerId, setPlayerId] = useState<string | null>(null);
+  useEffect(() => { (async () => {
+    const { data } = await supabase.auth.getUser();
+    setPlayerId(data.user?.id ?? null);
+  })(); }, []);
+
   // ---------- Data state
   const [draft, setDraft] = useState<Draft | null>(null);
   const [order, setOrder] = useState<DraftOrder[]>([]);
@@ -70,16 +53,6 @@ export default function DraftPage() {
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  // ---------- Auth user (player_id must match public.draft_order.player_id)
-  // If you already lift this into context elsewhere, swap this for your hook.
-  const [playerId, setPlayerId] = useState<string | null>(null);
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.auth.getUser();
-      setPlayerId(data.user?.id ?? null);
-    })();
-  }, []);
 
   // ---------- Fetchers
   const refetchDraft = useCallback(async () => {
@@ -115,41 +88,15 @@ export default function DraftPage() {
 
   const refetchGames = useCallback(async () => {
     if (!weekId) return;
-
-    // ---- TODO: replace this query to match your schema for showing games + totals.
-    // The goal is to return: game_id, label ("BUF v MIA"), and the current total line.
-    //
-    // Examples you might adapt:
-    // 1) If you have a view with totals:
-    // const { data } = await supabase.from('v_week_totals')
-    //   .select('game_id, label, total').eq('week_id', weekId);
-    //
-    // 2) If you store one row per game with a "total" column:
-    // const { data } = await supabase.from('game_lines')
-    //   .select('game_id, home_abbr, away_abbr, total')
-    //   .eq('week_id', weekId).eq('is_current', true);
-    //
-    // Below is a very defensive fallback that won’t break your page if the table/view
-    // doesn’t exist yet. Replace it with your real query.
-    try {
-      const { data, error } = await supabase
-        .from('v_ou_candidates') // <- change to your real view/table name
-        .select('game_id, label, total')
-        .eq('week_id', weekId)
-        .order('game_id', { ascending: true });
-
-      if (error) {
-        // silently ignore if the view doesn't exist yet
-        setGames([]);
-      } else {
-        setGames((data ?? []) as GameCard[]);
-      }
-    } catch {
-      setGames([]);
-    }
+    const { data, error } = await supabase
+      .from('v_ou_candidates')
+      .select('game_id, label, total')
+      .eq('week_id', weekId)
+      .order('game_id', { ascending: true });
+    if (!error) setGames((data ?? []) as GameCard[]);
   }, [weekId]);
 
-  // ---------- Initial fetch + realtime subs
+  // ---------- Initial fetch + realtime
   useEffect(() => {
     if (!weekId) return;
     setLoading(true);
@@ -159,22 +106,20 @@ export default function DraftPage() {
 
   useEffect(() => {
     if (!weekId) return;
-    const channel = supabase.channel(`draft:${weekId}`)
+    const ch = supabase.channel(`draft:${weekId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'drafts',   filter: `week_id=eq.${weekId}` }, refetchDraft)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'ou_picks', filter: `week_id=eq.${weekId}` }, () => {
         refetchOuPicks();
-        refetchDraft(); // current_pick_number will advance
+        refetchDraft(); // pick number will advance
       })
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    return () => { supabase.removeChannel(ch); };
   }, [weekId, refetchDraft, refetchOuPicks]);
 
   // ---------- Derived
-  const seats = useMemo(() => order.map(o => o.player_id), [order]);
   const onTheClock = useMemo(() => {
     if (!draft || !order.length) return null;
-    const seatIdx = Math.max(1, draft.current_pick_number) - 1; // 0-based
-    return order.find(o => o.pick_number === seatIdx + 1)?.player_id ?? null;
+    return order.find(o => o.pick_number === draft.current_pick_number)?.player_id ?? null;
   }, [draft, order]);
 
   // ---------- Make O/U pick via RPC
@@ -187,12 +132,11 @@ export default function DraftPage() {
         p_week: weekId,
         p_player: playerId,
         p_game_id: gameId,
-        p_side: side.toLowerCase(),   // IMPORTANT: your table constraint expects lowercase
+        p_side: side,   // lowercase expected by constraint
         p_total: total,
       });
       if (error) throw error;
-      // refetch handled by realtime sub; optional manual refetch:
-      // await Promise.all([refetchOuPicks(), refetchDraft()]);
+      // realtime will refresh UI
     } catch (e: any) {
       setErrorMsg(e?.message ?? 'Failed to make O/U pick.');
     } finally {
@@ -233,7 +177,7 @@ export default function DraftPage() {
         )}
       </div>
 
-      {/* Picks so far */}
+      {/* O/U Picks so far */}
       <section className="space-y-2">
         <h2 className="font-medium">O/U Picks</h2>
         <div className="space-y-1 text-sm">
@@ -252,7 +196,7 @@ export default function DraftPage() {
         </div>
       </section>
 
-      {/* Game cards with O/U buttons */}
+      {/* Game cards */}
       <section className="space-y-2">
         <h2 className="font-medium">Make your O/U pick</h2>
         {errorMsg && (
@@ -262,7 +206,7 @@ export default function DraftPage() {
         )}
         {games.length === 0 && (
           <div className="text-neutral-400 text-sm">
-            No games loaded for Week {weekId}. Replace the <code>refetchGames()</code> query to match your schema.
+            No games found for Week {weekId} in <code>v_ou_candidates</code>.
           </div>
         )}
         <div className="grid md:grid-cols-2 gap-3">
@@ -295,7 +239,7 @@ export default function DraftPage() {
                   </button>
                 </div>
                 {onTheClock !== playerId && (
-                  <div className="text-xs text-neutral-500 mt-2">Waiting for current player to pick…</div>
+                  <div className="text-xs text-neutral-500 mt-2">Waiting for current player…</div>
                 )}
               </div>
             );
