@@ -80,7 +80,17 @@ function onClockName(totalPicksSoFar: number, week: number): string {
 /* -------------------------------- component ------------------------------- */
 
 export default function DraftPage() {
-  const [week, setWeek] = useState<number>(2);
+  const [week, setWeek] = useState<number>(2); // initial fallback
+
+// On mount: prefer ?week=.., then localStorage, else keep current
+useEffect(() => {
+  const params = new URLSearchParams(window.location.search);
+  const urlWeek = params.get('week');
+  const saved = localStorage.getItem('ats.week');
+  const next = urlWeek ?? saved;
+  if (next) setWeek(parseInt(next, 10));
+}, []);
+
   const [board, setBoard] = useState<BoardRow[]>([]);
   const [picks, setPicks] = useState<PickViewRow[]>([]);
   const [myName, setMyName] = useState<string | null>(null);
@@ -267,19 +277,26 @@ useEffect(() => {
 }, [week]);
 
 
-  /* derived */
-  const totalPicksSoFar = picks.length;
-  const onClock = onClockName(totalPicksSoFar, week);
-  const isMyTurn = myName != null && onClock === myName;
+/* derived */
 
-  // Count only spread picks (team picks)
-  const spreadPicksCount = useMemo(
-    () => picks.filter(p => p.picked_team_short != null).length,
-    [picks]
-  );
+// Count picks by type
+const spreadPicksCount = useMemo(
+  () => picks.filter(p => p.picked_team_short != null).length,
+  [picks]
+);
+const ouPicksCount = useMemo(
+  () => picks.filter(p => p.total_at_pick != null).length,
+  [picks]
+);
 
-  // O/U phase starts after 9 spread picks
-  const ouPhase = spreadPicksCount >= 9;
+// O/U phase starts after 9 spread picks
+const ouPhase = spreadPicksCount >= 9;
+
+// Drive the turn using the right counter for the phase
+const picksForTurn = ouPhase ? ouPicksCount : spreadPicksCount;
+const onClock = onClockName(picksForTurn, week);
+const isMyTurn = myName != null && onClock === myName;
+
 
   // Has this user already made their O/U pick this week?
   const myOuAlreadyPicked = useMemo(
@@ -373,7 +390,15 @@ useEffect(() => {
           <select
             className="border rounded p-1 bg-transparent"
             value={week}
-            onChange={(e) => setWeek(parseInt(e.target.value, 10))}
+           onChange={(e) => {
+  const w = parseInt(e.target.value, 10);
+  setWeek(w);
+  localStorage.setItem('ats.week', String(w));
+  const params = new URLSearchParams(window.location.search);
+  params.set('week', String(w));
+  window.history.replaceState({}, '', `?${params.toString()}`);
+}}
+
           >
             {Array.from({ length: 18 }, (_, i) => i + 1).map((w) => (
               <option key={w} value={w}>
