@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
-import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 
 /* ------------------------------- constants ------------------------------- */
 
@@ -35,12 +34,13 @@ type PickViewRow = {
   player: string;
   home_short: string;
   away_short: string;
-  picked_team_short: string | null; // spread pick if not null
-  line_at_pick: number | null;      // signed line for spread pick
-  total_at_pick: number | null;     // O/U pick if not null
+  picked_team_short: string | null;  // spread pick if not null
+  line_at_pick: number | null;       // signed line for spread pick
+  total_at_pick: number | null;      // O/U total if not null
+  ou_side?: 'OVER' | 'UNDER' | null; // O/U side (for display)
 };
 
-/* --- only for mapping the ou RPC safely --- */
+/* --- only for mapping the OU RPC safely --- */
 type AdminOuRowUnknown = {
   player?: unknown;
   home_short?: unknown;
@@ -215,6 +215,7 @@ export default function DraftPage() {
         picked_team_short: toStr(o.picked_team_short, '') || null,
         line_at_pick: toNumOrNull(o.line_at_pick),
         total_at_pick: toNumOrNull(o.total_at_pick), // usually null in this RPC
+        ou_side: null,
       };
     });
 
@@ -228,8 +229,8 @@ export default function DraftPage() {
     // give O/U synthetic pick_numbers so they always sort after spread picks
     const ouMapped: PickViewRow[] = ouArr.map((r, idx) => {
       const x = r as AdminOuRowUnknown;
-      const side = toStr(x.pick_side).trim().toUpperCase(); // 'OVER'|'UNDER'
-      const labelTeam = side === 'UNDER' ? 'UNDER' : 'OVER';
+      const side: 'OVER' | 'UNDER' =
+        toStr(x.pick_side).trim().toUpperCase() === 'UNDER' ? 'UNDER' : 'OVER';
       return {
         pick_id: 10_000 + idx,           // synthetic id
         created_at: null,
@@ -241,7 +242,8 @@ export default function DraftPage() {
         away_short: toStr(x.away_short),
         picked_team_short: null,         // not a team pick
         line_at_pick: null,
-        total_at_pick: toNumOrNull(x.total_at_pick), // this is what we key on
+        total_at_pick: toNumOrNull(x.total_at_pick),
+        ou_side: side,
       };
     });
 
@@ -265,35 +267,23 @@ export default function DraftPage() {
     const ch = supabase
       .channel('draft-live')
       // Spread picks
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'picks' },
-        (_payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => {
-          loadPicksMerged(week);
-        }
-      )
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'picks' }, () => {
+        loadPicksMerged(week);
+      })
       // O/U picks
-      .on(
-        'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'ou_picks' },
-        () => loadPicksMerged(week)
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'ou_picks' },
-        () => loadPicksMerged(week)
-      )
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'ou_picks' }, () => {
+        loadPicksMerged(week);
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'ou_picks' }, () => {
+        loadPicksMerged(week);
+      })
       // Board refreshers
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'games' },
-        () => loadBoard(week)
-      )
-      .on(
-        'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'game_lines' },
-        () => loadBoard(week)
-      )
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'games' }, () => {
+        loadBoard(week);
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'game_lines' }, () => {
+        loadBoard(week);
+      })
       .subscribe();
 
     return () => {
@@ -325,9 +315,7 @@ export default function DraftPage() {
   const myOuAlreadyPicked = useMemo(() => {
     if (!myName) return false;
     const me = norm(myName);
-    return picks.some(
-      (p) => p.total_at_pick != null && norm(p.player) === me
-    );
+    return picks.some((p) => p.total_at_pick != null && norm(p.player) === me);
   }, [picks, myName]);
 
   // Teams already taken (disable buttons)
@@ -345,9 +333,7 @@ export default function DraftPage() {
     for (const name of PLAYERS) map.set(name, []);
     for (const p of picks) {
       const key =
-        (PLAYERS as readonly string[]).find((n) => norm(n) === norm(p.player)) ??
-        p.player ||
-        'Unknown';
+        (((PLAYERS as readonly string[]).find((n) => norm(n) === norm(p.player)) ?? p.player) || 'Unknown');
       const list = map.get(key) ?? [];
       list.push(p);
       map.set(key, list);
@@ -496,7 +482,7 @@ export default function DraftPage() {
                     ? 'Pick Em'
                     : fmtSigned(p.line_at_pick)
                   : p.total_at_pick != null
-                  ? (p.total_at_pick as number).toString()
+                  ? `${p.ou_side ?? ''} ${p.total_at_pick}`
                   : '';
 
                 return (
@@ -508,7 +494,7 @@ export default function DraftPage() {
                       </>
                     ) : (
                       <>
-                        O/U — <strong>{p.home_short} v {p.away_short}</strong> total {line}
+                        O/U — <strong>{p.home_short} v {p.away_short}</strong> {line}
                       </>
                     )}
                   </li>
@@ -529,24 +515,21 @@ export default function DraftPage() {
                 <ul className="text-sm space-y-1">
                   {list.map((p) => (
                     <li key={`${player}-${p.pick_id}-${p.pick_number}`}>
-                      {p.picked_team_short
-                        ? (
-                          <>
-                            {p.picked_team_short}{' '}
-                            <span className="text-zinc-400">
-                              {p.line_at_pick != null ? `(${fmtSigned(p.line_at_pick)})` : ''} — {p.home_short} v {p.away_short}
-                            </span>
-                          </>
-                        )
-                        : (
-                          <>
-                            O/U{' '}
-                            <span className="text-zinc-400">
-                              {p.home_short} v {p.away_short} — {p.total_at_pick ?? '—'}
-                            </span>
-                          </>
-                        )
-                      }
+                      {p.picked_team_short ? (
+                        <>
+                          {p.picked_team_short}{' '}
+                          <span className="text-zinc-400">
+                            {p.line_at_pick != null ? `(${fmtSigned(p.line_at_pick)})` : ''} — {p.home_short} v {p.away_short}
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          O/U{' '}
+                          <span className="text-zinc-400">
+                            {p.home_short} v {p.away_short} — {p.ou_side ?? ''} {p.total_at_pick ?? '—'}
+                          </span>
+                        </>
+                      )}
                     </li>
                   ))}
                 </ul>
