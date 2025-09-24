@@ -12,8 +12,8 @@ import {
 
 const YEAR = 2025;
 
-// Week-1 round-1 order for the league
-const PLAYERS_R1: readonly string[] = ['Kinish', 'Big Dawg', 'Pud'] as const;
+/** Canonical league order; DB starter rotates this each week */
+const BASE_ORDER: readonly string[] = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
 const DEFAULT_PLAYER =
   (process.env.NEXT_PUBLIC_DEFAULT_PLAYER_NAME || '').trim() || null;
@@ -102,10 +102,18 @@ function resolveInitialWeek(): number {
   return 1; // sensible default
 }
 
+/** Rotate BASE_ORDER so index 0 == starter */
+function rotateToStarter<T>(arr: readonly T[], starter: T): T[] {
+  const i = arr.indexOf(starter);
+  if (i < 0) return [...arr];
+  return [...arr.slice(i), ...arr.slice(0, i)];
+}
+
 /* -------------------------------- component ------------------------------- */
 
 export default function DraftPage() {
   const [week, setWeek] = useState<number>(2); // temp initial, corrected on mount
+  const [starter, setStarter] = useState<string | null>(null);
 
   // robust week bootstrapping + react to back/forward
   useEffect(() => {
@@ -137,6 +145,18 @@ export default function DraftPage() {
       setMyName(nm || null);
     })();
   }, []);
+
+  /* DB: fetch weekly starter from weeks.starter_player */
+  async function loadStarter(w: number) {
+    const { data, error } = await supabase
+      .from('weeks')
+      .select('starter_player')
+      .eq('season_year', YEAR)
+      .eq('week_number', w)
+      .maybeSingle();
+
+    if (!error) setStarter(toStr(data?.starter_player || ''));
+  }
 
   /* load board */
   async function loadBoard(w: number) {
@@ -286,7 +306,9 @@ export default function DraftPage() {
     setPicks(merged);
   }
 
+  // Load data for selected week
   useEffect(() => {
+    loadStarter(week);
     loadBoard(week);
     loadPicksMerged(week);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -321,6 +343,17 @@ export default function DraftPage() {
 
   /* ------------------------------ derived -------------------------------- */
 
+  // Round-1 order for this week from DB starter
+  const playersR1Names: string[] = useMemo(() => {
+    const s = starter && BASE_ORDER.includes(starter as any) ? (starter as typeof BASE_ORDER[number]) : BASE_ORDER[0];
+    return rotateToStarter(BASE_ORDER, s);
+  }, [starter]);
+
+  const playersR1: Player[] = useMemo(
+    () => playersR1Names.map((name) => ({ id: name, display_name: name })),
+    [playersR1Names]
+  );
+
   // count by type
   const spreadPicksCount = useMemo(
     () => picks.filter((p) => p.picked_team_short != null).length,
@@ -329,11 +362,6 @@ export default function DraftPage() {
   const ouPicksCount = useMemo(
     () => picks.filter((p) => p.total_at_pick != null).length,
     [picks]
-  );
-
-  const playersR1: Player[] = useMemo(
-    () => PLAYERS_R1.map((name) => ({ id: name, display_name: name })),
-    []
   );
 
   const atsTotal = totalAtsPicks(playersR1.length); // 3 players * 3 rounds = 9
@@ -388,10 +416,10 @@ export default function DraftPage() {
   // Group by player for the small scoreboard
   const picksByPlayer = useMemo(() => {
     const map = new Map<string, PickViewRow[]>();
-    for (const name of PLAYERS_R1) map.set(name, []);
+    for (const name of playersR1Names) map.set(name, []);
     for (const p of picks) {
       const key =
-        (((PLAYERS_R1 as readonly string[]).find((n) => norm(n) === norm(p.player)) ?? p.player) || 'Unknown');
+        ((playersR1Names as readonly string[]).find((n) => norm(n) === norm(p.player)) ?? p.player) || 'Unknown';
       const list = map.get(key) ?? [];
       list.push(p);
       map.set(key, list);
@@ -400,7 +428,7 @@ export default function DraftPage() {
       list.sort((a, b) => a.pick_number - b.pick_number);
     }
     return Array.from(map.entries());
-  }, [picks]);
+  }, [picks, playersR1Names]);
 
   /* ------------------------------- handlers ------------------------------- */
 
@@ -538,7 +566,6 @@ export default function DraftPage() {
           </div>
         ) : (
           <div className="flex items-center justify-center gap-3 py-2 rounded bg-zinc-900/50 border border-zinc-800">
-            {/* If /nfl.svg exists this shows; otherwise users will see 🏈 */}
             <img
               src={NFL_LOGO}
               alt="NFL"
