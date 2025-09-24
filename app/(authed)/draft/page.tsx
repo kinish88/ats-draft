@@ -13,7 +13,14 @@ import {
 const YEAR = 2025;
 
 /** Canonical league order; DB starter rotates this each week */
-const BASE_ORDER: readonly string[] = ['Big Dawg', 'Pud', 'Kinish'] as const;
+const BASE_ORDER = ['Big Dawg', 'Pud', 'Kinish'] as const;
+type Starter = typeof BASE_ORDER[number];
+
+const STARTER_SET: ReadonlySet<string> = new Set(BASE_ORDER);
+/** Coerce an arbitrary string/null from DB into a valid Starter */
+function coerceStarter(s: string | null): Starter {
+  return s && STARTER_SET.has(s) ? (s as Starter) : BASE_ORDER[0];
+}
 
 const DEFAULT_PLAYER =
   (process.env.NEXT_PUBLIC_DEFAULT_PLAYER_NAME || '').trim() || null;
@@ -104,7 +111,7 @@ function resolveInitialWeek(): number {
 
 /** Rotate BASE_ORDER so index 0 == starter */
 function rotateToStarter<T>(arr: readonly T[], starter: T): T[] {
-  const i = arr.indexOf(starter);
+  const i = (arr as readonly unknown[]).indexOf(starter);
   if (i < 0) return [...arr];
   return [...arr.slice(i), ...arr.slice(0, i)];
 }
@@ -343,9 +350,9 @@ export default function DraftPage() {
 
   /* ------------------------------ derived -------------------------------- */
 
-  // Round-1 order for this week from DB starter
+  // Round-1 order for this week from DB starter (type-safe, no "any")
   const playersR1Names: string[] = useMemo(() => {
-    const s = starter && BASE_ORDER.includes(starter as any) ? (starter as typeof BASE_ORDER[number]) : BASE_ORDER[0];
+    const s: Starter = coerceStarter(starter);
     return rotateToStarter(BASE_ORDER, s);
   }, [starter]);
 
