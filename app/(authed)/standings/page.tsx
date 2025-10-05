@@ -190,48 +190,48 @@ export default function StandingsPage() {
   }, [totalsByPlayer]);
 
   return (
-    <div className="max-w-6xl mx-auto px-6 py-6">
-      <header className="flex items-baseline justify-between mb-4">
-        <h1 className="text-4xl font-semibold">Season Standings</h1>
-        <div className="text-zinc-300">Through Week {throughWeek}</div>
-      </header>
+  <div className="max-w-6xl mx-auto px-6 py-6">
+    <header className="flex items-baseline justify-between mb-4">
+      <h1 className="text-4xl font-semibold">Season Standings</h1>
+      <div className="text-zinc-300">Through Week {throughWeek}</div>
+    </header>
 
-      <div className="overflow-x-auto">
-        <div className="min-w-[720px] border rounded overflow-hidden">
-          {/* SINGLE header row */}
-          <div className="grid grid-cols-[2fr,1fr,1fr,1fr,1fr,1fr] bg-zinc-900/70 text-zinc-200 px-4 py-3 text-sm font-semibold">
-            <div>PLAYER</div>
-            <div className="text-center">WEEK WINS</div>
-            <div className="text-center">ATS W</div>
-            <div className="text-center">ATS L</div>
-            <div className="text-center">ATS PU</div>
-            <div className="text-center">WIN %</div>
-          </div>
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[820px] border rounded overflow-hidden">
+        <thead className="bg-zinc-900/70 text-zinc-200">
+          <tr>
+            <th className="px-4 py-3 text-left">PLAYER</th>
+            <th className="px-4 py-3 text-center">WEEK WINS</th>
+            <th className="px-4 py-3 text-center">ATS W</th>
+            <th className="px-4 py-3 text-center">ATS L</th>
+            <th className="px-4 py-3 text-center">ATS PU</th>
+            <th className="px-4 py-3 text-center">WIN %</th>
+          </tr>
+        </thead>
 
-          {/* BODY rows */}
-          <div className="divide-y divide-zinc-800/70">
-            {loading ? (
-              <div className="px-4 py-6 text-sm text-zinc-400">Loading…</div>
-            ) : (
-              rows.map((r) => (
-                <div
-                  key={r.name}
-                  className="grid grid-cols-[2fr,1fr,1fr,1fr,1fr,1fr] px-4 py-4 items-center"
-                >
-                  <div className="font-semibold">{r.name}</div>
-                  <div className="text-center tabular-nums">{r.weekWins}</div>
-                  <div className="text-center tabular-nums">{r.w}</div>
-                  <div className="text-center tabular-nums">{r.l}</div>
-                  <div className="text-center tabular-nums">{r.pu}</div>
-                  <div className="text-center tabular-nums">{r.pct}</div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
-
-      <p className="mt-4 text-sm text-zinc-400">Win% treats pushes as losses.</p>
+        <tbody className="divide-y divide-zinc-800/70">
+          {loading ? (
+            <tr>
+              <td className="px-4 py-4 text-sm text-zinc-400" colSpan={6}>
+                Loading…
+              </td>
+            </tr>
+          ) : (
+            rows.map((r) => (
+              <tr key={r.name} className="hover:bg-zinc-900/30">
+                <td className="px-4 py-4 font-semibold">{r.name}</td>
+                <td className="px-4 py-4 text-center tabular-nums">{r.weekWins}</td>
+                <td className="px-4 py-4 text-center tabular-nums">{r.w}</td>
+                <td className="px-4 py-4 text-center tabular-nums">{r.l}</td>
+                <td className="px-4 py-4 text-center tabular-nums">{r.pu}</td>
+                <td className="px-4 py-4 text-center tabular-nums">{r.pct}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
     </div>
-  );
-}
+
+    <p className="mt-4 text-sm text-zinc-400">Win% treats pushes as losses.</p>
+  </div>
+);
