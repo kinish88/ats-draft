@@ -10,8 +10,6 @@ const PLAYERS_ORDERED = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
 /* ---------------------------------- types --------------------------------- */
 
-type WeekRow = { week_number: number };
-
 type PickRow = {
   player_display_name: string;
   team_short: string;
@@ -33,6 +31,23 @@ type Totals = {
   wins: number;
   losses: number;
   pushes: number;
+};
+
+/** Raw shapes coming back from RPCs/queries (unknown properties) */
+type RpcFinalRowUnknown = {
+  game_id?: unknown;
+  home?: unknown;
+  away?: unknown;
+  home_score?: unknown;
+  away_score?: unknown;
+};
+
+type PicksSelectRowUnknown = {
+  player_display_name?: unknown;
+  team_short?: unknown;
+  spread_at_pick?: unknown;
+  home_short?: unknown;
+  away_short?: unknown;
 };
 
 /* --------------------------------- utils ---------------------------------- */
@@ -77,26 +92,42 @@ export default function StandingsPage() {
   const [rows, setRows] = useState<Map<string, Totals>>(new Map());
   const [loading, setLoading] = useState(true);
 
-  // 1) Figure out which weeks have picks (so we know what to score)
+  // 1) Which weeks have picks? (so we know what to score)
   useEffect(() => {
     (async () => {
-      // distinct week_numbers that have any picks this season
-      const { data } = await supabase.rpc('list_weeks', { p_year: YEAR });
-      const fromWeeksTable =
-        Array.isArray(data) ? (data as any[]).map((w) => Number(w.week_number)).filter(Number.isFinite) : [];
+      // A) from weeks table (if you keep that up to date)
+      const { data: weeksRpc } = await supabase.rpc('list_weeks', { p_year: YEAR });
+      const weeksFromRpc: number[] = Array.isArray(weeksRpc)
+        ? (weeksRpc as unknown[])
+            .map((w): number | null => {
+              const n =
+                typeof (w as Record<string, unknown>)?.week_number === 'number'
+                  ? ((w as Record<string, unknown>).week_number as number)
+                  : null;
+              return n;
+            })
+            .filter((n): n is number => n != null)
+        : [];
 
-      // We also look at picks directly, in case list_weeks is sparse in your data.
+      // B) from picks table (safe source of truth)
       const { data: pickedWeeks } = await supabase
         .from('picks')
-        .select('week_id, weeks!inner(week_number)')
+        .select('weeks!inner(week_number)')
         .eq('season_year', YEAR)
         .order('weeks(week_number)', { ascending: true });
 
-      const fromPicks = (Array.isArray(pickedWeeks) ? pickedWeeks : [])
-        .map((r: any) => Number(r.weeks?.week_number))
-        .filter((n) => Number.isFinite(n));
+      const weeksFromPicks: number[] = Array.isArray(pickedWeeks)
+        ? (pickedWeeks as unknown[])
+            .map((r) => {
+              const rec = r as Record<string, unknown>;
+              const w = rec.weeks as Record<string, unknown> | undefined;
+              const n = typeof w?.week_number === 'number' ? (w.week_number as number) : null;
+              return n;
+            })
+            .filter((n): n is number => n != null)
+        : [];
 
-      const uniq = new Set<number>([...fromWeeksTable, ...fromPicks]);
+      const uniq = new Set<number>([...weeksFromRpc, ...weeksFromPicks]);
       const sorted = [...uniq].sort((a, b) => a - b);
       const latest = sorted.length ? sorted[sorted.length - 1] : 1;
 
@@ -105,7 +136,7 @@ export default function StandingsPage() {
     })();
   }, []);
 
-  // 2) Score all those weeks using the RPC + picks table
+  // 2) Score each week via the scoring RPC + picks table
   useEffect(() => {
     (async () => {
       if (!weeksToScore.length) {
@@ -122,28 +153,29 @@ export default function StandingsPage() {
         totals.set(p, { weekWins: 0, wins: 0, losses: 0, pushes: 0 });
       }
 
-      // score week-by-week
       for (const weekNumber of weeksToScore) {
-        // A) All final scores for the week (from RPC — this *does* return finals)
+        // A) Finals for the week (RPC)
         const { data: finals } = await supabase.rpc('get_week_games_for_scoring', {
           p_year: YEAR,
           p_week: weekNumber,
         });
 
-        const scores: ScoreRow[] = Array.isArray(finals)
-          ? (finals as any[]).map((r) => ({
-              game_id: Number(r.game_id),
-              home: toStr(r.home),
-              away: toStr(r.away),
-              home_score: toNumOrNull(r.home_score),
-              away_score: toNumOrNull(r.away_score),
-            }))
+        const finalsArr: RpcFinalRowUnknown[] = Array.isArray(finals)
+          ? (finals as unknown[]).map((x) => x as RpcFinalRowUnknown)
           : [];
+
+        const scores: ScoreRow[] = finalsArr.map((r) => ({
+          game_id: Number(toNumOrNull(r.game_id) ?? 0),
+          home: toStr(r.home),
+          away: toStr(r.away),
+          home_score: toNumOrNull(r.home_score),
+          away_score: toNumOrNull(r.away_score),
+        }));
 
         // index by pair "HOME-AWAY"
         const byPair = new Map<string, ScoreRow>();
         for (const g of scores) {
-          byPair.set(`${norm(g.home)}-${norm(g.away)}`, g);
+          if (g.home && g.away) byPair.set(`${norm(g.home)}-${norm(g.away)}`, g);
         }
 
         // B) Picks for that week
@@ -153,44 +185,44 @@ export default function StandingsPage() {
           .eq('season_year', YEAR)
           .eq('weeks.week_number', weekNumber);
 
-        const weekPicks: PickRow[] = Array.isArray(picks)
-          ? (picks as any[]).map((r) => ({
-              player_display_name: toStr(r.player_display_name),
-              team_short: toStr(r.team_short),
-              spread_at_pick: toNumOrNull(r.spread_at_pick),
-              home_short: toStr(r.home_short),
-              away_short: toStr(r.away_short),
-            }))
+        const pickArr: PicksSelectRowUnknown[] = Array.isArray(picks)
+          ? (picks as unknown[]).map((x) => x as PicksSelectRowUnknown)
           : [];
 
+        const weekPicks: PickRow[] = pickArr.map((r) => ({
+          player_display_name: toStr(r.player_display_name),
+          team_short: toStr(r.team_short),
+          spread_at_pick: toNumOrNull(r.spread_at_pick),
+          home_short: toStr(r.home_short),
+          away_short: toStr(r.away_short),
+        }));
+
         // C) Tally outcomes for players this week
-        const weekWinsMap = new Map<string, number>();
-        for (const pName of PLAYERS_ORDERED) weekWinsMap.set(pName, 0);
+        const weekWinCounter = new Map<string, number>();
+        for (const name of PLAYERS_ORDERED) weekWinCounter.set(name, 0);
 
         for (const pick of weekPicks) {
-          // Canonical player key
-          const player =
+          const canonical =
             (PLAYERS_ORDERED as readonly string[]).find((n) => norm(n) === norm(pick.player_display_name)) ??
             pick.player_display_name;
 
-          if (!totals.has(player)) totals.set(player, { weekWins: 0, wins: 0, losses: 0, pushes: 0 });
+          if (!totals.has(canonical)) totals.set(canonical, { weekWins: 0, wins: 0, losses: 0, pushes: 0 });
 
-          const g = byPair.get(`${norm(pick.home_short)}-${norm(pick.away_short)}`);
-          const result = scorePick(pick, g);
+          const game = byPair.get(`${norm(pick.home_short)}-${norm(pick.away_short)}`);
+          const result = scorePick(pick, game);
 
           if (result === 'win') {
-            totals.get(player)!.wins += 1;
-            weekWinsMap.set(player, (weekWinsMap.get(player) ?? 0) + 1);
+            totals.get(canonical)!.wins += 1;
+            weekWinCounter.set(canonical, (weekWinCounter.get(canonical) ?? 0) + 1);
           } else if (result === 'loss') {
-            totals.get(player)!.losses += 1;
+            totals.get(canonical)!.losses += 1;
           } else if (result === 'push') {
-            totals.get(player)!.pushes += 1;
+            totals.get(canonical)!.pushes += 1;
           }
-          // 'pending' is ignored; that just means the game has no final yet
         }
 
-        // D) Award week win(s): only players with **3 wins** get a week win
-        for (const [player, wWins] of weekWinsMap) {
+        // D) Award week wins (3–0 only)
+        for (const [player, wWins] of weekWinCounter) {
           if (wWins === 3) totals.get(player)!.weekWins += 1;
         }
       }
