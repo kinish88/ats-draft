@@ -1,60 +1,79 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 
 const YEAR = 2025;
-const PLAYERS = ['Big Dawg', 'Pud', 'Kinish'] as const;
+const PLAYERS: readonly string[] = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
-type WeekRowUnknown = { week_number?: unknown };
+/* ------------------------------- types ----------------------------------- */
 
-type WeekSummaryUnknown = {
-  display_name?: unknown;
-  spread_wins?: unknown;
-  spread_losses?: unknown;
-  spread_pushes?: unknown;
-  ou_result?: unknown; // 'win' | 'loss' | 'push' | null
+type PickRow = {
+  id: number;
+  player_display_name: string;
+  team_short: string;       // picked team
+  spread_at_pick: number | null;
+  game_id: number;
 };
 
-type WeekSummaryRow = {
-  display_name: string;
-  spread_wins: number;
-  spread_losses: number;
-  spread_pushes: number;
-  ou_result: 'win' | 'loss' | 'push' | null;
+type GameRow = {
+  id: number;
+  home: string;
+  away: string;
+  home_score: number | null;
+  away_score: number | null;
+  live_home_score: number | null;
+  live_away_score: number | null;
+  is_final: boolean | null;
+  is_live: boolean | null;
 };
 
-type Totals = {
-  weekWins: number;
-  w: number;
-  l: number;
-  p: number;
-};
+type Totals = { weekWins: number; w: number; l: number; p: number };
 
-function toNum(x: unknown, def = 0): number {
-  if (typeof x === 'number') return Number.isFinite(x) ? x : def;
-  if (typeof x === 'string') {
-    const n = Number(x);
-    return Number.isFinite(n) ? n : def;
-  }
-  return def;
-}
-function toStr(x: unknown, def = ''): string {
-  return typeof x === 'string' ? x : def;
-}
-function toOu(x: unknown): 'win' | 'loss' | 'push' | null {
-  return x === 'win' || x === 'loss' || x === 'push' ? x : null;
-}
-/** Win% where pushes are counted as losses in the percentage denominator. */
-function pct(w: number, l: number, p: number) {
-  const games = w + l + p; // pushes count as losses for Win%
-  if (!games) return '—';
-  return `${((w / games) * 100).toFixed(1)}%`;
+/* -------------------------------- utils ---------------------------------- */
+
+const toNum = (x: unknown, fb = 0) =>
+  typeof x === 'number' && Number.isFinite(x) ? x : fb;
+
+const toStr = (x: unknown, fb = '') =>
+  typeof x === 'string' ? x : x == null ? fb : String(x);
+
+const norm = (s: string) => s.trim().toLowerCase();
+
+/** For standings we only count **final** outcomes (live/pending don’t move totals). */
+function outcomeATS(g: GameRow | undefined, picked: string, spread: number | null):
+  'win' | 'loss' | 'push' | 'pending'
+{
+  if (!g || g.home_score == null || g.away_score == null || spread == null) return 'pending';
+
+  const pickIsHome = picked === g.home;
+  const ps = pickIsHome ? g.home_score : g.away_score;
+  const os = pickIsHome ? g.away_score : g.home_score;
+
+  const adj = ps + spread;
+  if (adj > os) return 'win';
+  if (adj < os) return 'loss';
+  return 'push';
 }
 
-export default function SeasonStandingsPage() {
+/** latest week_id with any picks this season (auto “through week”). */
+async function getThroughWeek(): Promise<number> {
+  const { data } = await supabase
+    .from('picks')
+    .select('week_id')
+    .eq('season_year', YEAR)
+    .order('week_id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return typeof data?.week_id === 'number' ? data.week_id : 1;
+}
+
+/* -------------------------------- page ----------------------------------- */
+
+export default function StandingsPage() {
   const [loading, setLoading] = useState(true);
+  const [throughWeek, setThroughWeek] = useState<number>(1);
   const [rows, setRows] = useState<
     Array<{ player: string; weekWins: number; w: number; l: number; p: number }>
   >([]);
@@ -63,82 +82,111 @@ export default function SeasonStandingsPage() {
     (async () => {
       setLoading(true);
 
-      // 1) Which weeks exist?
-      const { data: weeksRaw, error: weeksErr } = await supabase.rpc('list_weeks', { p_year: YEAR });
-      if (weeksErr) console.error('list_weeks error', weeksErr);
-      const weeksList = Array.isArray(weeksRaw) ? (weeksRaw as unknown[]) : [];
-      const weeks: number[] = weeksList
-        .map((w) => {
-          const wr = w as WeekRowUnknown;
-          return typeof wr.week_number === 'number' ? wr.week_number : null;
-        })
-        .filter((n): n is number => n !== null)
-        .sort((a, b) => a - b);
+      const thru = await getThroughWeek();
+      setThroughWeek(thru);
 
-      // seed totals
+      // Seed season totals
       const totals = new Map<string, Totals>();
       for (const name of PLAYERS) totals.set(name, { weekWins: 0, w: 0, l: 0, p: 0 });
 
-      // 2) Iterate week-by-week
-      for (const wnum of weeks) {
-        const { data, error } = await supabase.rpc('get_week_summary', { p_year: YEAR, p_week: wnum });
-        if (error) {
-          console.error('get_week_summary error', { wnum, error });
-          continue;
+      // Loop weeks 1..throughWeek and aggregate
+      for (let wnum = 1; wnum <= thru; wnum++) {
+        // Pull all spread picks for the week
+        const { data: pickRows } = await supabase
+          .from('picks')
+          .select('id, player_display_name, team_short, spread_at_pick, game_id')
+          .eq('season_year', YEAR)
+          .eq('week_id', wnum);
+
+        const picks: PickRow[] = (Array.isArray(pickRows) ? pickRows : [])
+          .map((r) => ({
+            id: toNum((r as any).id),
+            player_display_name: toStr((r as any).player_display_name),
+            team_short: toStr((r as any).team_short),
+            spread_at_pick: (r as any).spread_at_pick ?? null,
+            game_id: toNum((r as any).game_id),
+          }))
+          .filter((p) => p.id && p.game_id);
+
+        if (!picks.length) continue;
+
+        // Fetch the games touched this week
+        const ids = Array.from(new Set(picks.map((p) => p.game_id)));
+        const { data: gameRows } = await supabase
+          .from('games')
+          .select(
+            'id,home,away,home_score,away_score,live_home_score,live_away_score,is_final,is_live'
+          )
+          .in('id', ids);
+
+        const games = new Map<number, GameRow>();
+        for (const r of (Array.isArray(gameRows) ? gameRows : [])) {
+          const g = r as any;
+          games.set(toNum(g.id), {
+            id: toNum(g.id),
+            home: toStr(g.home),
+            away: toStr(g.away),
+            home_score: g.home_score ?? null,
+            away_score: g.away_score ?? null,
+            live_home_score: g.live_home_score ?? null,
+            live_away_score: g.live_away_score ?? null,
+            is_final: g.is_final ?? null,
+            is_live: g.is_live ?? null,
+          });
         }
-        const arr = Array.isArray(data) ? (data as unknown[]) : [];
 
-        const summary: WeekSummaryRow[] = arr.map((r) => {
-          const u = r as WeekSummaryUnknown;
-          return {
-            display_name: toStr(u.display_name),
-            spread_wins: toNum(u.spread_wins),
-            spread_losses: toNum(u.spread_losses),
-            spread_pushes: toNum(u.spread_pushes),
-            ou_result: toOu(u.ou_result),
-          };
-        });
+        // Tally weekly results per player (count **finals only**)
+        const weekly = new Map<string, { w: number; l: number; p: number }>();
+        for (const name of PLAYERS) weekly.set(name, { w: 0, l: 0, p: 0 });
 
-        // accumulate ATS tallies (season)
-        for (const r of summary) {
-          const t = totals.get(r.display_name);
+        for (const pick of picks) {
+          const player =
+            (PLAYERS as readonly string[]).find(
+              (n) => norm(n) === norm(pick.player_display_name)
+            ) ?? pick.player_display_name;
+
+          const g = games.get(pick.game_id);
+          const res = outcomeATS(g, pick.team_short, pick.spread_at_pick);
+
+          if (res === 'pending') continue; // don’t count non-final picks
+
+          const w = weekly.get(player) || { w: 0, l: 0, p: 0 };
+          if (res === 'win') w.w += 1;
+          else if (res === 'loss') w.l += 1;
+          else w.p += 1;
+          weekly.set(player, w);
+        }
+
+        // Apply weekly results to season totals
+        for (const [player, wk] of weekly) {
+          const t = totals.get(player);
           if (!t) continue;
-          t.w += r.spread_wins;
-          t.l += r.spread_losses;
-          t.p += r.spread_pushes;
+          t.w += wk.w;
+          t.l += wk.l;
+          t.p += wk.p;
         }
 
-        // ---- WEEK WIN RULES ----
-        // Only award a week win if someone is 3–0 ATS.
-        // If multiple are 3–0, apply O/U tiebreak: keep only O/U 'win' among those.
-        // If still tied (no OU or same result), award all tied 3–0 players.
-        const perfects = summary.filter((r) => r.spread_wins === 3);
-        if (perfects.length > 0) {
-          let contenders = perfects;
-
-          // O/U tiebreak if needed
-          if (contenders.length > 1) {
-            const ouWinners = contenders.filter((r) => r.ou_result === 'win');
-            if (ouWinners.length > 0) contenders = ouWinners;
-          }
-
-          // Award week win to all remaining contenders (often 1; could be >1 if still tied)
-          for (const r of contenders) {
-            const t = totals.get(r.display_name);
+        // Week Win(s): any player who went 3–0 this week (no O/U involved)
+        for (const [player, wk] of weekly) {
+          if (wk.w === 3) {
+            const t = totals.get(player);
             if (t) t.weekWins += 1;
           }
         }
       }
 
-      const table = PLAYERS.map((name) => {
-        const t = totals.get(name)!;
-        return { player: name, ...t };
+      // Build & sort the table
+      const table = PLAYERS.map((player) => {
+        const t = totals.get(player)!;
+        return { player, ...t };
       }).sort((a, b) => {
-        // Sort by Week Wins desc, then Win% desc (pushes counted as losses in pct)
-        const byWeekWins = b.weekWins - a.weekWins;
-        if (byWeekWins) return byWeekWins;
-        const aPct = a.w / Math.max(1, a.w + a.l + a.p);
-        const bPct = b.w / Math.max(1, b.w + b.l + b.p);
+        // primary: Week Wins
+        if (b.weekWins !== a.weekWins) return b.weekWins - a.weekWins;
+        // secondary: Win% (pushes count as losses in the rate)
+        const aDen = a.w + a.l + a.p;
+        const bDen = b.w + b.l + b.p;
+        const aPct = aDen ? a.w / aDen : 0;
+        const bPct = bDen ? b.w / bDen : 0;
         return bPct - aPct;
       });
 
@@ -147,44 +195,69 @@ export default function SeasonStandingsPage() {
     })();
   }, []);
 
-  return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Season Standings</h1>
-        <Link href="/"><span className="text-sm opacity-80 hover:opacity-100">← Back</span></Link>
-      </div>
+  const displayRows = useMemo(() => {
+    return rows.map((r) => {
+      const played = r.w + r.l + r.p;           // pushes treated as losses in % (i.e., part of denominator)
+      const pct = played ? r.w / played : 0;
+      return { ...r, pct };
+    });
+  }, [rows]);
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead className="text-left border-b border-zinc-700">
+  /* --------------------------------- UI ----------------------------------- */
+
+  return (
+    <div className="max-w-4xl mx-auto p-6">
+      <header className="flex items-center justify-between mb-4">
+        <h1 className="text-3xl font-semibold">Season Standings</h1>
+        <div className="text-sm text-zinc-400">Through Week {throughWeek}</div>
+      </header>
+
+      <div className="overflow-x-auto border rounded">
+        <table className="min-w-full text-left">
+          <thead className="bg-zinc-900/60 text-xs uppercase tracking-wide border-b">
             <tr>
-              <th className="py-2 pr-4">Player</th>
-              <th className="py-2 pr-4">Week Wins</th>
-              <th className="py-2 pr-4">ATS W</th>
-              <th className="py-2 pr-4">ATS L</th>
-              <th className="py-2 pr-4">ATS PU</th>
-              <th className="py-2 pr-4">Win %</th>
+              <th className="px-4 py-2">Player</th>
+              <th className="px-4 py-2">Week Wins</th>
+              <th className="px-4 py-2">ATS W</th>
+              <th className="px-4 py-2">ATS L</th>
+              <th className="px-4 py-2">ATS PU</th>
+              <th className="px-4 py-2">Win %</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-zinc-800/60">
             {loading ? (
-              <tr><td className="py-3 text-zinc-400" colSpan={6}>Loading…</td></tr>
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-zinc-400">
+                  Calculating…
+                </td>
+              </tr>
+            ) : displayRows.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-zinc-400">
+                  No data yet.
+                </td>
+              </tr>
             ) : (
-              rows.map((r) => (
-                <tr key={r.player} className="border-b border-zinc-800">
-                  <td className="py-2 pr-4">{r.player}</td>
-                  <td className="py-2 pr-4">{r.weekWins}</td>
-                  <td className="py-2 pr-4">{r.w}</td>
-                  <td className="py-2 pr-4">{r.l}</td>
-                  <td className="py-2 pr-4">{r.p}</td>
-                  <td className="py-2 pr-4">{pct(r.w, r.l, r.p)}</td>
+              displayRows.map((r) => (
+                <tr key={r.player}>
+                  <td className="px-4 py-3 font-medium">{r.player}</td>
+                  <td className="px-4 py-3 tabular-nums">{r.weekWins}</td>
+                  <td className="px-4 py-3 tabular-nums">{r.w}</td>
+                  <td className="px-4 py-3 tabular-nums">{r.l}</td>
+                  <td className="px-4 py-3 tabular-nums">{r.p}</td>
+                  <td className="px-4 py-3 tabular-nums">
+                    {(r.pct * 100).toFixed(1)}%
+                  </td>
                 </tr>
               ))
             )}
           </tbody>
         </table>
-        <div className="mt-2 text-xs text-zinc-500">Win% treats pushes as losses.</div>
       </div>
+
+      <p className="text-sm text-zinc-400 mt-3">
+        Win% treats pushes as losses.
+      </p>
     </div>
   );
 }
