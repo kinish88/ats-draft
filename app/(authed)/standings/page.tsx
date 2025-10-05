@@ -3,15 +3,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
-/* ------------------------------- constants ------------------------------- */
-
 const YEAR = 2025;
 const PLAYERS: readonly string[] = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
-/* --------------------------------- types --------------------------------- */
-
 type SafeRec = Record<string, unknown>;
-
 type PicksRow = {
   week_id: number;
   pick_number: number;
@@ -21,7 +16,6 @@ type PicksRow = {
   home_short: string;
   away_short: string;
 };
-
 type RpcGameRow = {
   game_id: number;
   home: string;
@@ -29,10 +23,7 @@ type RpcGameRow = {
   home_score: number | null;
   away_score: number | null;
 };
-
 type Totals = { weekWins: number; w: number; l: number; pu: number };
-
-/* --------------------------------- utils --------------------------------- */
 
 const norm = (s: string) => s.trim().toUpperCase();
 const toStr = (x: unknown, fb = '') => (typeof x === 'string' ? x : x == null ? fb : String(x));
@@ -41,30 +32,25 @@ const toNumOrNull = (x: unknown) => {
   const n = typeof x === 'number' ? x : Number(x);
   return Number.isFinite(n) ? n : null;
 };
-const pairKey = (home: string, away: string) => `${norm(home)}-${norm(away)}`;
-
-/* ------------------------------ scoring ---------------------------------- */
+const keyPair = (h: string, a: string) => `${norm(h)}-${norm(a)}`;
 
 type Outcome = 'win' | 'loss' | 'push' | 'pending';
-
-function atsOutcome(g: RpcGameRow | undefined, pickedTeam: string, line: number | null): Outcome {
+function atsOutcome(g: RpcGameRow | undefined, team: string, line: number | null): Outcome {
   if (!g || line == null) return 'pending';
   const hs = toNumOrNull(g.home_score);
   const as = toNumOrNull(g.away_score);
   if (hs == null || as == null) return 'pending';
-  const pickIsHome = norm(pickedTeam) === norm(g.home);
-  const adj = (pickIsHome ? hs : as) + line;
-  const opp = pickIsHome ? as : hs;
+  const isHome = norm(team) === norm(g.home);
+  const adj = (isHome ? hs : as) + line;
+  const opp = isHome ? as : hs;
   if (adj > opp) return 'win';
   if (adj < opp) return 'loss';
   return 'push';
 }
 
-/* --------------------------------- page ---------------------------------- */
-
 export default function StandingsPage() {
+  const [throughWeek, setThroughWeek] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [throughWeek, setThroughWeek] = useState<number>(1);
   const [totalsByPlayer, setTotalsByPlayer] = useState<Map<string, Totals>>(
     () => new Map(PLAYERS.map((p) => [p, { weekWins: 0, w: 0, l: 0, pu: 0 }]))
   );
@@ -73,7 +59,7 @@ export default function StandingsPage() {
     (async () => {
       setLoading(true);
 
-      // Join picks->weeks so we know which week_number each pick belongs to.
+      // Pull picks (joined to weeks to get week_number)
       const { data: picksRows } = await supabase
         .from('picks')
         .select(
@@ -96,7 +82,6 @@ export default function StandingsPage() {
         };
       });
 
-      // Build week_id -> week_number map
       const weekIdToNum = new Map<number, number>();
       for (const r of (Array.isArray(picksRows) ? picksRows : []) as SafeRec[]) {
         const wk = r['weeks'] as SafeRec | undefined;
@@ -107,36 +92,36 @@ export default function StandingsPage() {
       }
 
       if (!picks.length) {
-        setTotalsByPlayer(new Map(PLAYERS.map((p) => [p, { weekWins: 0, w: 0, l: 0, pu: 0 }])));
         setThroughWeek(1);
+        setTotalsByPlayer(new Map(PLAYERS.map((p) => [p, { weekWins: 0, w: 0, l: 0, pu: 0 }])));
         setLoading(false);
         return;
       }
 
       const maxWeek = Math.max(...Array.from(weekIdToNum.values()));
-      setThroughWeek(maxWeek > 0 ? maxWeek : 1);
+      setThroughWeek(maxWeek);
 
-      // Group picks by week_id
+      // group picks by week
       const byWeek = new Map<number, PicksRow[]>();
       for (const p of picks) {
-        const list = byWeek.get(p.week_id) ?? [];
-        list.push(p);
-        byWeek.set(p.week_id, list);
+        const arr = byWeek.get(p.week_id) ?? [];
+        arr.push(p);
+        byWeek.set(p.week_id, arr);
       }
 
       const totals = new Map<string, Totals>(
         PLAYERS.map((p) => [p, { weekWins: 0, w: 0, l: 0, pu: 0 }])
       );
 
-      // Score each week against that week’s games
+      // score week by week against week’s games
       for (const [weekId, list] of byWeek) {
         const weekNum = weekIdToNum.get(weekId) ?? maxWeek;
-        const { data: gamesRows } = await supabase.rpc('get_week_games_for_scoring', {
+
+        const { data: gameRows } = await supabase.rpc('get_week_games_for_scoring', {
           p_year: YEAR,
           p_week: weekNum,
         });
-
-        const games: RpcGameRow[] = (Array.isArray(gamesRows) ? gamesRows : []).map((r) => {
+        const games: RpcGameRow[] = (Array.isArray(gameRows) ? gameRows : []).map((r) => {
           const o = r as SafeRec;
           return {
             game_id: Number(o.game_id ?? 0),
@@ -146,11 +131,10 @@ export default function StandingsPage() {
             away_score: toNumOrNull(o.away_score),
           };
         });
-
         const gameMap = new Map<string, RpcGameRow>();
-        for (const g of games) gameMap.set(pairKey(g.home, g.away), g);
+        for (const g of games) gameMap.set(keyPair(g.home, g.away), g);
 
-        const wkResults = new Map<string, { w: number; l: number; pu: number }>(
+        const weekAgg = new Map<string, { w: number; l: number; pu: number }>(
           PLAYERS.map((p) => [p, { w: 0, l: 0, pu: 0 }])
         );
 
@@ -160,33 +144,33 @@ export default function StandingsPage() {
               (n) => n.toLowerCase() === p.player_display_name.toLowerCase()
             ) ?? p.player_display_name;
 
-          const gm = gameMap.get(pairKey(p.home_short, p.away_short));
-          const out = atsOutcome(gm, p.team_short, p.spread_at_pick);
+          const g = gameMap.get(keyPair(p.home_short, p.away_short));
+          const out = atsOutcome(g, p.team_short, p.spread_at_pick);
 
-          const agg = totals.get(player)!;
-          const wk = wkResults.get(player)!;
+          const t = totals.get(player)!;
+          const wk = weekAgg.get(player)!;
 
           if (out === 'win') {
-            agg.w += 1;
+            t.w += 1;
             wk.w += 1;
           } else if (out === 'loss') {
-            agg.l += 1;
+            t.l += 1;
             wk.l += 1;
           } else if (out === 'push') {
-            agg.pu += 1;
+            t.pu += 1;
             wk.pu += 1;
           }
 
-          totals.set(player, agg);
-          wkResults.set(player, wk);
+          totals.set(player, t);
+          weekAgg.set(player, wk);
         }
 
-        // Week win only for 3–0
-        for (const [player, wk] of wkResults) {
+        // 3–0 only for a Week Win
+        for (const [name, wk] of weekAgg) {
           if (wk.w === 3 && wk.l === 0 && wk.pu === 0) {
-            const t = totals.get(player)!;
+            const t = totals.get(name)!;
             t.weekWins += 1;
-            totals.set(player, t);
+            totals.set(name, t);
           }
         }
       }
@@ -199,9 +183,9 @@ export default function StandingsPage() {
   const rows = useMemo(() => {
     return PLAYERS.map((name) => {
       const t = totalsByPlayer.get(name) ?? { weekWins: 0, w: 0, l: 0, pu: 0 };
-      const denom = t.w + t.l + t.pu; // pushes treated as losses in %
+      const denom = t.w + t.l + t.pu; // pushes count as losses in %
       const pct = denom > 0 ? (t.w / denom) * 100 : 0;
-      return { name, ...t, pct };
+      return { name, ...t, pct: pct.toFixed(1) + '%' };
     });
   }, [totalsByPlayer]);
 
@@ -214,7 +198,7 @@ export default function StandingsPage() {
 
       <div className="overflow-x-auto">
         <div className="min-w-[720px] border rounded overflow-hidden">
-          {/* Header row — single line, 6 columns */}
+          {/* SINGLE header row */}
           <div className="grid grid-cols-[2fr,1fr,1fr,1fr,1fr,1fr] bg-zinc-900/70 text-zinc-200 px-4 py-3 text-sm font-semibold">
             <div>PLAYER</div>
             <div className="text-center">WEEK WINS</div>
@@ -224,7 +208,7 @@ export default function StandingsPage() {
             <div className="text-center">WIN %</div>
           </div>
 
-          {/* Body rows */}
+          {/* BODY rows */}
           <div className="divide-y divide-zinc-800/70">
             {loading ? (
               <div className="px-4 py-6 text-sm text-zinc-400">Loading…</div>
@@ -239,7 +223,7 @@ export default function StandingsPage() {
                   <div className="text-center tabular-nums">{r.w}</div>
                   <div className="text-center tabular-nums">{r.l}</div>
                   <div className="text-center tabular-nums">{r.pu}</div>
-                  <div className="text-center tabular-nums">{r.pct.toFixed(1)}%</div>
+                  <div className="text-center tabular-nums">{r.pct}</div>
                 </div>
               ))
             )}
