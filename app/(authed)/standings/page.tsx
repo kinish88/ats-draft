@@ -3,297 +3,303 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
+/** CONFIG */
 const YEAR = 2025;
 const PLAYERS: readonly string[] = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
-/* ------------------------------- types ----------------------------------- */
-
-type WeekRow = { id: number; week_number: number; season_year: number };
-
-type PickRow = {
-  id: number;
-  player_display_name: string;
-  team_short: string;
-  spread_at_pick: number | null;
-  game_id: number;
+/** Types from our tables/RPCs (only what we use) */
+type WeekRow = { id: number; week_number: number };
+type GameForScoring = {
+  game_id?: unknown;
+  home?: unknown;        // RPC returns team short (e.g., PHI)
+  away?: unknown;        // RPC returns team short (e.g., DAL)
+  home_score?: unknown;
+  away_score?: unknown;
 };
 
-type GameRow = {
+type GameResolved = {
   id: number;
   home: string;
   away: string;
   home_score: number | null;
   away_score: number | null;
-  is_final: boolean | null;
 };
 
-type Totals = { weekWins: number; w: number; l: number; p: number };
+type PickRow = {
+  week_id?: unknown;
+  pick_number?: unknown;
+  player_display_name?: unknown;
+  team_short?: unknown;      // picked team short
+  spread_at_pick?: unknown;  // signed line for picked team
+  home_short?: unknown;
+  away_short?: unknown;
+};
 
-/* -------------------------------- utils ---------------------------------- */
+type AtsPick = {
+  week_id: number;
+  player: string;
+  team_short: string;
+  spread: number | null;
+  home: string;
+  away: string;
+};
 
-const toNum = (x: unknown): number | null =>
-  typeof x === 'number' && Number.isFinite(x) ? x : null;
+type Totals = {
+  weekWins: number;
+  w: number;
+  l: number;
+  pu: number;
+};
 
-const toStr = (x: unknown): string => (typeof x === 'string' ? x : '');
-
-const toBool = (x: unknown): boolean | null =>
-  typeof x === 'boolean' ? x : null;
-
-const asRec = (x: unknown): Record<string, unknown> =>
-  (x && typeof x === 'object' ? (x as Record<string, unknown>) : {}) as Record<
-    string,
-    unknown
-  >;
-
+const toStr = (x: unknown, fb = ''): string =>
+  typeof x === 'string' ? x : x == null ? fb : String(x);
+const toNumOrNull = (x: unknown): number | null => {
+  if (x == null) return null;
+  const n = typeof x === 'number' ? x : Number(x);
+  return Number.isFinite(n) ? n : null;
+};
 const norm = (s: string) => s.trim().toLowerCase();
 
+/** Compute ATS outcome for a single pick given a final game score */
 function outcomeATS(
-  g: GameRow | undefined,
-  picked: string,
-  spread: number | null
+  game: GameResolved | undefined,
+  pickedTeam: string,
+  spreadForPick: number | null
 ): 'win' | 'loss' | 'push' | 'pending' {
-  if (!g || g.home_score == null || g.away_score == null || spread == null) {
-    return 'pending';
-  }
-  const pickIsHome = picked === g.home;
-  const ps = pickIsHome ? g.home_score : g.away_score;
-  const os = pickIsHome ? g.away_score : g.home_score;
+  if (!game) return 'pending';
+  const { home_score, away_score } = game;
+  if (home_score == null || away_score == null) return 'pending';
+  if (spreadForPick == null) return 'pending';
 
-  const adj = ps + spread;
-  if (adj > os) return 'win';
-  if (adj < os) return 'loss';
+  const pickIsHome = norm(pickedTeam) === norm(game.home);
+  const pickScore = pickIsHome ? home_score : away_score;
+  const oppScore = pickIsHome ? away_score : home_score;
+
+  const adjusted = pickScore + spreadForPick;
+  if (adjusted > oppScore) return 'win';
+  if (adjusted < oppScore) return 'loss';
   return 'push';
 }
 
-/* -------------------------------- page ----------------------------------- */
-
-export default function StandingsPage() {
+/** Page component */
+export default function SeasonStandingsPage() {
+  const [throughWeek, setThroughWeek] = useState<number>(1);
+  const [totalsByPlayer, setTotalsByPlayer] = useState<Map<string, Totals>>(
+    () =>
+      new Map(
+        (PLAYERS as readonly string[]).map((p) => [
+          p,
+          { weekWins: 0, w: 0, l: 0, pu: 0 },
+        ])
+      )
+  );
   const [loading, setLoading] = useState(true);
-  const [throughWeekNumber, setThroughWeekNumber] = useState<number>(1);
-  const [rows, setRows] = useState<
-    Array<{ player: string; weekWins: number; w: number; l: number; p: number }>
-  >([]);
 
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-
-      // 0) Load weeks for this season to build id <-> number mapping
-      const { data: wkRows } = await supabase
-        .from('weeks')
-        .select('id,week_number,season_year')
-        .eq('season_year', YEAR);
-
-      const weeks: WeekRow[] = (Array.isArray(wkRows) ? wkRows : [])
-        .map((r) => {
-          const o = asRec(r);
-          const id = toNum(o.id) ?? 0;
-          const week_number = toNum(o.week_number) ?? 0;
-          const season_year = toNum(o.season_year) ?? 0;
-          return { id, week_number, season_year };
-        })
-        .filter((w) => w.id > 0 && w.week_number > 0);
-
-      const idByNumber = new Map<number, number>();
-      const numberById = new Map<number, number>();
-      for (const w of weeks) {
-        idByNumber.set(w.week_number, w.id);
-        numberById.set(w.id, w.week_number);
-      }
-
-      // Determine latest week NUMBER with any picks
-      const { data: lastPick } = await supabase
-        .from('picks')
-        .select('week_id')
-        .eq('season_year', YEAR)
-        .order('week_id', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      const latestWeekId =
-        typeof lastPick?.week_id === 'number' ? (lastPick.week_id as number) : null;
-      const latestWeekNumber =
-        latestWeekId != null ? numberById.get(latestWeekId) ?? 1 : 1;
-      setThroughWeekNumber(latestWeekNumber);
-
-      // 1) Seed season totals
-      const totals = new Map<string, Totals>();
-      for (const name of PLAYERS) totals.set(name, { weekWins: 0, w: 0, l: 0, p: 0 });
-
-      // 2) Loop week numbers 1..through and aggregate using week IDs
-      for (let weekNum = 1; weekNum <= latestWeekNumber; weekNum++) {
-        const wid = idByNumber.get(weekNum);
-        if (!wid) continue;
-
-        // A) spread picks for this week id
-        const { data: pickRows } = await supabase
-          .from('picks')
-          .select('id,player_display_name,team_short,spread_at_pick,game_id')
-          .eq('season_year', YEAR)
-          .eq('week_id', wid);
-
-        const picks: PickRow[] = (Array.isArray(pickRows) ? pickRows : [])
-          .map((r) => {
-            const rec = asRec(r);
-            const id = toNum(rec.id);
-            const game_id = toNum(rec.game_id);
-            return {
-              id: id ?? 0,
-              player_display_name: toStr(rec.player_display_name),
-              team_short: toStr(rec.team_short),
-              spread_at_pick:
-                typeof rec.spread_at_pick === 'number'
-                  ? (rec.spread_at_pick as number)
-                  : null,
-              game_id: game_id ?? 0,
-            };
-          })
-          .filter((p) => p.id > 0 && p.game_id > 0);
-
-        if (!picks.length) continue;
-
-        // B) fetch those games
-        const ids = Array.from(new Set(picks.map((p) => p.game_id)));
-        const { data: gameRows } = await supabase
-          .from('games')
-          .select('id,home,away,home_score,away_score,is_final')
-          .in('id', ids);
-
-        const gameMap = new Map<number, GameRow>();
-        for (const r of (Array.isArray(gameRows) ? gameRows : [])) {
-          const rec = asRec(r);
-          const id = toNum(rec.id);
-          if (id == null) continue;
-          gameMap.set(id, {
-            id,
-            home: toStr(rec.home),
-            away: toStr(rec.away),
-            home_score: toNum(rec.home_score),
-            away_score: toNum(rec.away_score),
-            is_final: toBool(rec.is_final),
-          });
-        }
-
-        // C) weekly tallies
-        const weekly = new Map<string, { w: number; l: number; p: number }>();
-        for (const name of PLAYERS) weekly.set(name, { w: 0, l: 0, p: 0 });
-
-        for (const pick of picks) {
-          const player =
-            (PLAYERS as readonly string[]).find(
-              (n) => norm(n) === norm(pick.player_display_name)
-            ) ?? pick.player_display_name;
-
-          const g = gameMap.get(pick.game_id);
-          const res = outcomeATS(g, pick.team_short, pick.spread_at_pick);
-
-          if (res === 'pending') continue; // don’t count non-final
-          const w = weekly.get(player) || { w: 0, l: 0, p: 0 };
-          if (res === 'win') w.w += 1;
-          else if (res === 'loss') w.l += 1;
-          else w.p += 1;
-          weekly.set(player, w);
-        }
-
-        // D) commit weekly -> season totals
-        for (const [player, wk] of weekly) {
-          const t = totals.get(player);
-          if (!t) continue;
-          t.w += wk.w;
-          t.l += wk.l;
-          t.p += wk.p;
-        }
-
-        // E) award week wins (3–0 only)
-        for (const [player, wk] of weekly) {
-          if (wk.w === 3) {
-            const t = totals.get(player);
-            if (t) t.weekWins += 1;
-          }
-        }
-      }
-
-      // 3) build table
-      const table = PLAYERS.map((player) => {
-        const t = totals.get(player)!;
-        return { player, ...t };
-      }).sort((a, b) => {
-        if (b.weekWins !== a.weekWins) return b.weekWins - a.weekWins;
-        const aDen = a.w + a.l + a.p;
-        const bDen = b.w + b.l + b.p;
-        const aPct = aDen ? a.w / aDen : 0;
-        const bPct = bDen ? b.w / bDen : 0;
-        return bPct - aPct;
-      });
-
-      setRows(table);
-      setLoading(false);
-    })();
+    void loadStandings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const displayRows = useMemo(() => {
-    return rows.map((r) => {
-      const played = r.w + r.l + r.p; // pushes included (treated as losses)
-      const pct = played ? r.w / played : 0;
-      return { ...r, pct };
-    });
-  }, [rows]);
+  async function loadStandings() {
+    setLoading(true);
 
-  /* --------------------------------- UI ----------------------------------- */
+    /** 1) Map week_id -> week_number for the season */
+    const { data: weeksData } = await supabase
+      .from('weeks')
+      .select('id, week_number')
+      .eq('season_year', YEAR);
+
+    const weeks: WeekRow[] = Array.isArray(weeksData)
+      ? (weeksData as WeekRow[])
+      : [];
+
+    const weekNumberById = new Map<number, number>();
+    for (const w of weeks) {
+      weekNumberById.set(w.id, w.week_number);
+    }
+
+    /** 2) Which week_ids actually have picks this season? */
+    const { data: usedWeeksRaw } = await supabase
+      .from('picks')
+      .select('week_id')
+      .eq('season_year', YEAR)
+      .not('week_id', 'is', null);
+
+    const usedWeekIds = new Set<number>();
+    if (Array.isArray(usedWeeksRaw)) {
+      for (const r of usedWeeksRaw as Array<{ week_id?: number }>) {
+        if (typeof r.week_id === 'number') usedWeekIds.add(r.week_id);
+      }
+    }
+
+    /** 3) Convert to week_numbers and sort */
+    const usedWeekNumbers = Array.from(usedWeekIds)
+      .map((id) => weekNumberById.get(id) ?? null)
+      .filter((n): n is number => typeof n === 'number')
+      .sort((a, b) => a - b);
+
+    const latestWeekNumber = usedWeekNumbers.length
+      ? usedWeekNumbers[usedWeekNumbers.length - 1]
+      : 1;
+
+    setThroughWeek(latestWeekNumber);
+
+    /** 4) Accumulate per-player totals across all used weeks */
+    const agg = new Map<string, Totals>(
+      (PLAYERS as readonly string[]).map((p) => [
+        p,
+        { weekWins: 0, w: 0, l: 0, pu: 0 },
+      ])
+    );
+
+    for (const wk of usedWeekNumbers) {
+      // 4a) fetch final scores for that week from your RPC (stable column names)
+      const { data: gamesRaw } = await supabase.rpc(
+        'get_week_games_for_scoring',
+        { p_year: YEAR, p_week: wk }
+      );
+
+      const gamesArr: GameForScoring[] = Array.isArray(gamesRaw)
+        ? (gamesRaw as GameForScoring[])
+        : [];
+
+      const games: GameResolved[] = gamesArr
+        .map((r): GameResolved | null => {
+          const id = toNumOrNull(r.game_id);
+          const home = toStr(r.home);
+          const away = toStr(r.away);
+          const hs = toNumOrNull(r.home_score);
+          const as = toNumOrNull(r.away_score);
+          if (id == null || !home || !away) return null;
+          return {
+            id,
+            home,
+            away,
+            home_score: hs,
+            away_score: as,
+          };
+        })
+        .filter((g): g is GameResolved => g !== null);
+
+      // (index by pair for quick lookup)
+      const gameByPair = new Map<string, GameResolved>();
+      for (const g of games) gameByPair.set(`${g.home}-${g.away}`, g);
+
+      // 4b) fetch the 3 spread picks for that week
+      const { data: picksRaw } = await supabase
+        .from('picks')
+        .select(
+          'week_id, pick_number, player_display_name, team_short, spread_at_pick, home_short, away_short'
+        )
+        .eq('season_year', YEAR)
+        .eq('week_id', Array.from(weekNumberById.entries()).find(([, num]) => num === wk)?.[0] ?? -1) // safe lookup
+        .order('pick_number', { ascending: true });
+
+      const picksArr: PickRow[] = Array.isArray(picksRaw)
+        ? (picksRaw as PickRow[])
+        : [];
+
+      const picks: AtsPick[] = picksArr
+        .map((r): AtsPick | null => {
+          const wid = toNumOrNull(r.week_id);
+          const player = toStr(r.player_display_name);
+          const team_short = toStr(r.team_short);
+          const spread = toNumOrNull(r.spread_at_pick);
+          const home = toStr(r.home_short);
+          const away = toStr(r.away_short);
+          if (wid == null || !player || !team_short || !home || !away) return null;
+          return { week_id: wid, player, team_short, spread, home, away };
+        })
+        .filter((p): p is AtsPick => p !== null);
+
+      // group by player for the week to compute week winner
+      const weekWinsPerPlayer = new Map<string, number>();
+      for (const name of PLAYERS) weekWinsPerPlayer.set(name, 0);
+
+      for (const p of picks) {
+        const canonical =
+          (PLAYERS as readonly string[]).find((n) => norm(n) === norm(p.player)) ??
+          p.player;
+
+        const key = `${p.home}-${p.away}`;
+        const g = gameByPair.get(key);
+
+        const o = outcomeATS(g, p.team_short, p.spread);
+        const t = agg.get(canonical) ?? { weekWins: 0, w: 0, l: 0, pu: 0 };
+
+        if (o === 'win') {
+          t.w += 1;
+          weekWinsPerPlayer.set(canonical, (weekWinsPerPlayer.get(canonical) ?? 0) + 1);
+        } else if (o === 'loss') {
+          t.l += 1;
+        } else if (o === 'push') {
+          t.pu += 1;
+        }
+        agg.set(canonical, t);
+      }
+
+      // only a 3–0 week counts as a "Week Win"
+      for (const [playerName, winsThisWeek] of weekWinsPerPlayer) {
+        if (winsThisWeek === 3) {
+          const t = agg.get(playerName)!;
+          t.weekWins += 1;
+          agg.set(playerName, t);
+        }
+      }
+    }
+
+    setTotalsByPlayer(agg);
+    setLoading(false);
+  }
+
+  const rows = useMemo(() => {
+    return (PLAYERS as readonly string[]).map((name) => {
+      const t = totalsByPlayer.get(name) ?? { weekWins: 0, w: 0, l: 0, pu: 0 };
+      const denom = t.w + t.l + t.pu; // pushes count as losses in win%
+      const pct = denom > 0 ? (t.w / denom) * 100 : 0;
+      return { name, ...t, pct };
+    });
+  }, [totalsByPlayer]);
 
   return (
-    <div className="max-w-4xl mx-auto p-6">
-      <header className="flex items-center justify-between mb-4">
-        <h1 className="text-3xl font-semibold">Season Standings</h1>
-        <div className="text-sm text-zinc-400">Through Week {throughWeekNumber}</div>
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+      <header className="flex items-center justify-between">
+        <h1 className="text-3xl font-bold">Season Standings</h1>
+        <div className="text-zinc-400">Through Week {throughWeek}</div>
       </header>
 
-      <div className="overflow-x-auto border rounded">
-        <table className="min-w-full text-left">
-          <thead className="bg-zinc-900/60 text-xs uppercase tracking-wide border-b">
-            <tr>
-              <th className="px-4 py-2">Player</th>
-              <th className="px-4 py-2">Week Wins</th>
-              <th className="px-4 py-2">ATS W</th>
-              <th className="px-4 py-2">ATS L</th>
-              <th className="px-4 py-2">ATS PU</th>
-              <th className="px-4 py-2">Win %</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-zinc-800/60">
-            {loading ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-6 text-zinc-400">
-                  Calculating…
-                </td>
-              </tr>
-            ) : displayRows.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="px-4 py-6 text-zinc-400">
-                  No data yet.
-                </td>
-              </tr>
-            ) : (
-              displayRows.map((r) => (
-                <tr key={r.player}>
-                  <td className="px-4 py-3 font-medium">{r.player}</td>
-                  <td className="px-4 py-3 tabular-nums">{r.weekWins}</td>
-                  <td className="px-4 py-3 tabular-nums">{r.w}</td>
-                  <td className="px-4 py-3 tabular-nums">{r.l}</td>
-                  <td className="px-4 py-3 tabular-nums">{r.p}</td>
-                  <td className="px-4 py-3 tabular-nums">
-                    {(r.pct * 100).toFixed(1)}%
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      <section className="border rounded overflow-hidden">
+        <div className="grid grid-cols-[2fr,1fr,1fr,1fr,1fr,1fr] bg-zinc-900/60 text-xs px-3 py-2 border-b">
+          <div>PLAYER</div>
+          <div className="text-right">WEEK WINS</div>
+          <div className="text-right">ATS W</div>
+          <div className="text-right">ATS L</div>
+          <div className="text-right">ATS PU</div>
+          <div className="text-right">WIN %</div>
+        </div>
 
-      <p className="text-sm text-zinc-400 mt-3">
+        {loading ? (
+          <div className="px-3 py-4 text-sm text-zinc-400">Loading…</div>
+        ) : (
+          rows.map((r) => (
+            <div
+              key={r.name}
+              className="grid grid-cols-[2fr,1fr,1fr,1fr,1fr,1fr] px-3 py-3 border-b last:border-b-0"
+            >
+              <div className="font-medium">{r.name}</div>
+              <div className="text-right">{r.weekWins}</div>
+              <div className="text-right">{r.w}</div>
+              <div className="text-right">{r.l}</div>
+              <div className="text-right">{r.pu}</div>
+              <div className="text-right">{r.pct.toFixed(1)}%</div>
+            </div>
+          ))
+        )}
+      </section>
+
+      <div className="text-sm text-zinc-400">
         Win% treats pushes as losses.
-      </p>
+      </div>
     </div>
   );
 }
