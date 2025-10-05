@@ -32,20 +32,32 @@ type Totals = { weekWins: number; w: number; l: number; p: number };
 
 /* -------------------------------- utils ---------------------------------- */
 
-const toNum = (x: unknown, fb = 0) =>
-  typeof x === 'number' && Number.isFinite(x) ? x : fb;
+const toNum = (x: unknown): number | null =>
+  typeof x === 'number' && Number.isFinite(x) ? x : null;
 
-const toStr = (x: unknown, fb = '') =>
-  typeof x === 'string' ? x : x == null ? fb : String(x);
+const toStr = (x: unknown): string =>
+  typeof x === 'string' ? x : '';
+
+const toBool = (x: unknown): boolean | null =>
+  typeof x === 'boolean' ? x : null;
+
+const asRec = (x: unknown): Record<string, unknown> =>
+  (x && typeof x === 'object' ? (x as Record<string, unknown>) : {}) as Record<
+    string,
+    unknown
+  >;
 
 const norm = (s: string) => s.trim().toLowerCase();
 
 /** For standings we only count **final** outcomes (live/pending don’t move totals). */
-function outcomeATS(g: GameRow | undefined, picked: string, spread: number | null):
-  'win' | 'loss' | 'push' | 'pending'
-{
-  if (!g || g.home_score == null || g.away_score == null || spread == null) return 'pending';
-
+function outcomeATS(
+  g: GameRow | undefined,
+  picked: string,
+  spread: number | null
+): 'win' | 'loss' | 'push' | 'pending' {
+  if (!g || g.home_score == null || g.away_score == null || spread == null) {
+    return 'pending';
+  }
   const pickIsHome = picked === g.home;
   const ps = pickIsHome ? g.home_score : g.away_score;
   const os = pickIsHome ? g.away_score : g.home_score;
@@ -99,14 +111,22 @@ export default function StandingsPage() {
           .eq('week_id', wnum);
 
         const picks: PickRow[] = (Array.isArray(pickRows) ? pickRows : [])
-          .map((r) => ({
-            id: toNum((r as any).id),
-            player_display_name: toStr((r as any).player_display_name),
-            team_short: toStr((r as any).team_short),
-            spread_at_pick: (r as any).spread_at_pick ?? null,
-            game_id: toNum((r as any).game_id),
-          }))
-          .filter((p) => p.id && p.game_id);
+          .map((r) => {
+            const rec = asRec(r);
+            const id = toNum(rec.id);
+            const game_id = toNum(rec.game_id);
+            return {
+              id: id ?? 0,
+              player_display_name: toStr(rec.player_display_name),
+              team_short: toStr(rec.team_short),
+              spread_at_pick:
+                typeof rec.spread_at_pick === 'number'
+                  ? (rec.spread_at_pick as number)
+                  : null,
+              game_id: game_id ?? 0,
+            };
+          })
+          .filter((p) => p.id > 0 && p.game_id > 0);
 
         if (!picks.length) continue;
 
@@ -119,19 +139,21 @@ export default function StandingsPage() {
           )
           .in('id', ids);
 
-        const games = new Map<number, GameRow>();
+        const gameMap = new Map<number, GameRow>();
         for (const r of (Array.isArray(gameRows) ? gameRows : [])) {
-          const g = r as any;
-          games.set(toNum(g.id), {
-            id: toNum(g.id),
-            home: toStr(g.home),
-            away: toStr(g.away),
-            home_score: g.home_score ?? null,
-            away_score: g.away_score ?? null,
-            live_home_score: g.live_home_score ?? null,
-            live_away_score: g.live_away_score ?? null,
-            is_final: g.is_final ?? null,
-            is_live: g.is_live ?? null,
+          const rec = asRec(r);
+          const id = toNum(rec.id);
+          if (id == null) continue;
+          gameMap.set(id, {
+            id,
+            home: toStr(rec.home),
+            away: toStr(rec.away),
+            home_score: toNum(rec.home_score),
+            away_score: toNum(rec.away_score),
+            live_home_score: toNum(rec.live_home_score),
+            live_away_score: toNum(rec.live_away_score),
+            is_final: toBool(rec.is_final),
+            is_live: toBool(rec.is_live),
           });
         }
 
@@ -145,7 +167,7 @@ export default function StandingsPage() {
               (n) => norm(n) === norm(pick.player_display_name)
             ) ?? pick.player_display_name;
 
-          const g = games.get(pick.game_id);
+          const g = gameMap.get(pick.game_id);
           const res = outcomeATS(g, pick.team_short, pick.spread_at_pick);
 
           if (res === 'pending') continue; // don’t count non-final picks
@@ -166,7 +188,7 @@ export default function StandingsPage() {
           t.p += wk.p;
         }
 
-        // Week Win(s): any player who went 3–0 this week (no O/U involved)
+        // Week Win(s): any player who went 3–0 this week
         for (const [player, wk] of weekly) {
           if (wk.w === 3) {
             const t = totals.get(player);
@@ -197,7 +219,7 @@ export default function StandingsPage() {
 
   const displayRows = useMemo(() => {
     return rows.map((r) => {
-      const played = r.w + r.l + r.p;           // pushes treated as losses in % (i.e., part of denominator)
+      const played = r.w + r.l + r.p;           // pushes included in denominator (treated as losses)
       const pct = played ? r.w / played : 0;
       return { ...r, pct };
     });
