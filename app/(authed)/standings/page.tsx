@@ -7,17 +7,18 @@ import { supabase } from '@/lib/supabaseClient';
 const YEAR = 2025;
 const PLAYERS: readonly string[] = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
-/** Types from our tables/RPCs (only what we use) */
+/** Minimal types we use */
 type WeekRow = { id: number; week_number: number };
-type GameForScoring = {
+
+type RpcGame = {
   game_id?: unknown;
-  home?: unknown;        // RPC returns team short (e.g., PHI)
-  away?: unknown;        // RPC returns team short (e.g., DAL)
+  home?: unknown;        // team short (e.g., PHI)
+  away?: unknown;        // team short (e.g., DAL)
   home_score?: unknown;
   away_score?: unknown;
 };
 
-type GameResolved = {
+type Game = {
   id: number;
   home: string;
   away: string;
@@ -25,12 +26,11 @@ type GameResolved = {
   away_score: number | null;
 };
 
-type PickRow = {
+type PicksRow = {
   week_id?: unknown;
-  pick_number?: unknown;
   player_display_name?: unknown;
-  team_short?: unknown;      // picked team short
-  spread_at_pick?: unknown;  // signed line for picked team
+  team_short?: unknown;
+  spread_at_pick?: unknown;  // signed number for picked team
   home_short?: unknown;
   away_short?: unknown;
 };
@@ -44,14 +44,9 @@ type AtsPick = {
   away: string;
 };
 
-type Totals = {
-  weekWins: number;
-  w: number;
-  l: number;
-  pu: number;
-};
+type Totals = { weekWins: number; w: number; l: number; pu: number };
 
-const toStr = (x: unknown, fb = ''): string =>
+const toStr = (x: unknown, fb = '') =>
   typeof x === 'string' ? x : x == null ? fb : String(x);
 const toNumOrNull = (x: unknown): number | null => {
   if (x == null) return null;
@@ -60,9 +55,9 @@ const toNumOrNull = (x: unknown): number | null => {
 };
 const norm = (s: string) => s.trim().toLowerCase();
 
-/** Compute ATS outcome for a single pick given a final game score */
+/** Compute ATS outcome given a final score */
 function outcomeATS(
-  game: GameResolved | undefined,
+  game: Game | undefined,
   pickedTeam: string,
   spreadForPick: number | null
 ): 'win' | 'loss' | 'push' | 'pending' {
@@ -81,7 +76,6 @@ function outcomeATS(
   return 'push';
 }
 
-/** Page component */
 export default function SeasonStandingsPage() {
   const [throughWeek, setThroughWeek] = useState<number>(1);
   const [totalsByPlayer, setTotalsByPlayer] = useState<Map<string, Totals>>(
@@ -103,22 +97,22 @@ export default function SeasonStandingsPage() {
   async function loadStandings() {
     setLoading(true);
 
-    /** 1) Map week_id -> week_number for the season */
+    /** 1) Weeks for the season → build both maps */
     const { data: weeksData } = await supabase
       .from('weeks')
       .select('id, week_number')
       .eq('season_year', YEAR);
 
-    const weeks: WeekRow[] = Array.isArray(weeksData)
-      ? (weeksData as WeekRow[])
-      : [];
+    const weeks: WeekRow[] = Array.isArray(weeksData) ? (weeksData as WeekRow[]) : [];
 
+    const weekIdByNumber = new Map<number, number>();
     const weekNumberById = new Map<number, number>();
     for (const w of weeks) {
+      weekIdByNumber.set(w.week_number, w.id);
       weekNumberById.set(w.id, w.week_number);
     }
 
-    /** 2) Which week_ids actually have picks this season? */
+    /** 2) Which week_ids have picks this season? */
     const { data: usedWeeksRaw } = await supabase
       .from('picks')
       .select('week_id')
@@ -132,7 +126,7 @@ export default function SeasonStandingsPage() {
       }
     }
 
-    /** 3) Convert to week_numbers and sort */
+    /** 3) Convert to week numbers; sort; set “Through Week N” */
     const usedWeekNumbers = Array.from(usedWeekIds)
       .map((id) => weekNumberById.get(id) ?? null)
       .filter((n): n is number => typeof n === 'number')
@@ -144,7 +138,7 @@ export default function SeasonStandingsPage() {
 
     setThroughWeek(latestWeekNumber);
 
-    /** 4) Accumulate per-player totals across all used weeks */
+    /** 4) Aggregate per-player totals across those weeks */
     const agg = new Map<string, Totals>(
       (PLAYERS as readonly string[]).map((p) => [
         p,
@@ -152,51 +146,46 @@ export default function SeasonStandingsPage() {
       ])
     );
 
-    for (const wk of usedWeekNumbers) {
-      // 4a) fetch final scores for that week from your RPC (stable column names)
+    for (const wkNum of usedWeekNumbers) {
+      const wkId = weekIdByNumber.get(wkNum);
+      if (!wkId) continue;
+
+      // 4a) Finals for the week via RPC
       const { data: gamesRaw } = await supabase.rpc(
         'get_week_games_for_scoring',
-        { p_year: YEAR, p_week: wk }
+        { p_year: YEAR, p_week: wkNum }
       );
 
-      const gamesArr: GameForScoring[] = Array.isArray(gamesRaw)
-        ? (gamesRaw as GameForScoring[])
+      const gamesArr: RpcGame[] = Array.isArray(gamesRaw)
+        ? (gamesRaw as RpcGame[])
         : [];
 
-      const games: GameResolved[] = gamesArr
-        .map((r): GameResolved | null => {
+      const games: Game[] = gamesArr
+        .map((r): Game | null => {
           const id = toNumOrNull(r.game_id);
           const home = toStr(r.home);
           const away = toStr(r.away);
           const hs = toNumOrNull(r.home_score);
           const as = toNumOrNull(r.away_score);
           if (id == null || !home || !away) return null;
-          return {
-            id,
-            home,
-            away,
-            home_score: hs,
-            away_score: as,
-          };
+          return { id, home, away, home_score: hs, away_score: as };
         })
-        .filter((g): g is GameResolved => g !== null);
+        .filter((g): g is Game => g !== null);
 
-      // (index by pair for quick lookup)
-      const gameByPair = new Map<string, GameResolved>();
+      const gameByPair = new Map<string, Game>();
       for (const g of games) gameByPair.set(`${g.home}-${g.away}`, g);
 
-      // 4b) fetch the 3 spread picks for that week
+      // 4b) 3 ATS picks for the week (by week_id)
       const { data: picksRaw } = await supabase
         .from('picks')
         .select(
-          'week_id, pick_number, player_display_name, team_short, spread_at_pick, home_short, away_short'
+          'week_id, player_display_name, team_short, spread_at_pick, home_short, away_short'
         )
         .eq('season_year', YEAR)
-        .eq('week_id', Array.from(weekNumberById.entries()).find(([, num]) => num === wk)?.[0] ?? -1) // safe lookup
-        .order('pick_number', { ascending: true });
+        .eq('week_id', wkId);
 
-      const picksArr: PickRow[] = Array.isArray(picksRaw)
-        ? (picksRaw as PickRow[])
+      const picksArr: PicksRow[] = Array.isArray(picksRaw)
+        ? (picksRaw as PicksRow[])
         : [];
 
       const picks: AtsPick[] = picksArr
@@ -212,24 +201,22 @@ export default function SeasonStandingsPage() {
         })
         .filter((p): p is AtsPick => p !== null);
 
-      // group by player for the week to compute week winner
-      const weekWinsPerPlayer = new Map<string, number>();
-      for (const name of PLAYERS) weekWinsPerPlayer.set(name, 0);
+      // Count weekly wins (3–0 only)
+      const winsThisWeek = new Map<string, number>();
+      for (const name of PLAYERS) winsThisWeek.set(name, 0);
 
       for (const p of picks) {
         const canonical =
           (PLAYERS as readonly string[]).find((n) => norm(n) === norm(p.player)) ??
           p.player;
 
-        const key = `${p.home}-${p.away}`;
-        const g = gameByPair.get(key);
-
+        const g = gameByPair.get(`${p.home}-${p.away}`);
         const o = outcomeATS(g, p.team_short, p.spread);
-        const t = agg.get(canonical) ?? { weekWins: 0, w: 0, l: 0, pu: 0 };
 
+        const t = agg.get(canonical) ?? { weekWins: 0, w: 0, l: 0, pu: 0 };
         if (o === 'win') {
           t.w += 1;
-          weekWinsPerPlayer.set(canonical, (weekWinsPerPlayer.get(canonical) ?? 0) + 1);
+          winsThisWeek.set(canonical, (winsThisWeek.get(canonical) ?? 0) + 1);
         } else if (o === 'loss') {
           t.l += 1;
         } else if (o === 'push') {
@@ -238,12 +225,12 @@ export default function SeasonStandingsPage() {
         agg.set(canonical, t);
       }
 
-      // only a 3–0 week counts as a "Week Win"
-      for (const [playerName, winsThisWeek] of weekWinsPerPlayer) {
-        if (winsThisWeek === 3) {
-          const t = agg.get(playerName)!;
+      // 3–0 gets a week win
+      for (const [name, w] of winsThisWeek) {
+        if (w === 3) {
+          const t = agg.get(name)!;
           t.weekWins += 1;
-          agg.set(playerName, t);
+          agg.set(name, t);
         }
       }
     }
@@ -255,7 +242,7 @@ export default function SeasonStandingsPage() {
   const rows = useMemo(() => {
     return (PLAYERS as readonly string[]).map((name) => {
       const t = totalsByPlayer.get(name) ?? { weekWins: 0, w: 0, l: 0, pu: 0 };
-      const denom = t.w + t.l + t.pu; // pushes count as losses in win%
+      const denom = t.w + t.l + t.pu; // pushes treated as losses in Win%
       const pct = denom > 0 ? (t.w / denom) * 100 : 0;
       return { name, ...t, pct };
     });
@@ -269,6 +256,7 @@ export default function SeasonStandingsPage() {
       </header>
 
       <section className="border rounded overflow-hidden">
+        {/* header row */}
         <div className="grid grid-cols-[2fr,1fr,1fr,1fr,1fr,1fr] bg-zinc-900/60 text-xs px-3 py-2 border-b">
           <div>PLAYER</div>
           <div className="text-right">WEEK WINS</div>
@@ -297,9 +285,7 @@ export default function SeasonStandingsPage() {
         )}
       </section>
 
-      <div className="text-sm text-zinc-400">
-        Win% treats pushes as losses.
-      </div>
+      <div className="text-sm text-zinc-400">Win% treats pushes as losses.</div>
     </div>
   );
 }
