@@ -569,46 +569,104 @@ export default function DraftPage() {
       </section>
 
       {/* Toast styles */}
-      <style jsx global>{`
-        .toast-pop {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          padding: 10px 12px;
-          border-radius: 10px;
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-          color: #e5e7eb;
-          background: #27272a;
-          transform: translateY(8px);
-          opacity: 0;
-          transition: transform 250ms ease, opacity 250ms ease;
-          font-size: 0.9rem;
-        }
-        .toast-pop.in {
-          transform: translateY(0);
-          opacity: 1;
-        }
-        .toast-pop.out {
-          transform: translateY(8px);
-          opacity: 0;
-        }
-        .toast-pop.positive {
-          background: #064e3b;
-          border-color: #065f46;
-          color: #d1fae5;
-        }
-        .toast-pop.negative {
-          background: #7f1d1d;
-          border-color: #991b1b;
-          color: #fee2e2;
-        }
-        .toast-pop.neutral {
-          background: #27272a;
-          border-color: #3f3f46;
-          color: #e5e7eb;
-        }
-      `}</style>
+<style jsx global>{`
+  /* Toast styles */
+  .toast-pop {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    color: #e5e7eb;
+    background: #27272a;
+    transform: translateY(8px);
+    opacity: 0;
+    transition: transform 250ms ease, opacity 250ms ease;
+    font-size: 0.9rem;
+  }
+  .toast-pop.in {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  .toast-pop.out {
+    transform: translateY(8px);
+    opacity: 0;
+  }
+  .toast-pop.positive {
+    background: #064e3b;
+    border-color: #065f46;
+    color: #d1fae5;
+  }
+  .toast-pop.negative {
+    background: #7f1d1d;
+    border-color: #991b1b;
+    color: #fee2e2;
+  }
+  .toast-pop.neutral {
+    background: #27272a;
+    border-color: #3f3f46;
+    color: #e5e7eb;
+  }
+
+  /* --- Game lines & picks styling --- */
+  table tbody tr td {
+    padding-top: 6px !important;
+    padding-bottom: 6px !important;
+  }
+
+  table img {
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+  }
+
+  table span.font-semibold {
+    font-weight: 600;
+    color: #fafafa;
+  }
+
+  table span.text-zinc-400 {
+    color: #a1a1aa;
+  }
+
+  table span.text-zinc-500 {
+    color: #71717a;
+  }
+
+  /* Lighten “Pick Em” text slightly */
+  table td span.text-xs.text-zinc-400.ml-1 {
+    color: #9ca3af !important;
+  }
+
+  /* Add hover fade for O/U */
+  td.text-right.text-xs.text-zinc-400 span.text-zinc-200 {
+    opacity: 0.75;
+    transition: opacity 200ms ease;
+  }
+  tr:hover td.text-right.text-xs.text-zinc-400 span.text-zinc-200 {
+    opacity: 1;
+  }
+
+  /* Pick cards */
+  section .border.rounded.p-3.bg-zinc-950\\/50 {
+    transition: border-color 200ms ease, background-color 200ms ease;
+  }
+  section .border.rounded.p-3.bg-zinc-950\\/50:hover {
+    border-color: #3f3f46;
+    background-color: #18181b;
+  }
+
+  button {
+    transition: all 200ms ease;
+  }
+  button:hover:not(:disabled) {
+    background: #27272a;
+    color: #e5e7eb;
+  }
+`}</style>
+
     </div>
   );
 }
