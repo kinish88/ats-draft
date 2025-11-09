@@ -84,11 +84,8 @@ export default function DraftPage() {
   /* 🧠 Load current open week automatically */
   useEffect(() => {
     ;(async () => {
-      const { data, error } = await supabase
-        .from('current_open_week')
-        .select('week_id')
-        .maybeSingle()
-      if (!error && data?.week_id) setWeek(Number(data.week_id))
+      const { data } = await supabase.from('current_open_week').select('week_id').maybeSingle()
+      if (data?.week_id) setWeek(Number(data.week_id))
     })()
   }, [])
 
@@ -151,10 +148,7 @@ export default function DraftPage() {
   }
 
   async function loadPicksMerged(w: number, showToast = false) {
-    const { data } = await supabase.rpc('get_week_picks', {
-      p_year: YEAR,
-      p_week: w,
-    })
+    const { data } = await supabase.rpc('get_week_picks', { p_year: YEAR, p_week: w })
     const arr: unknown[] = Array.isArray(data) ? data : []
     const mapped: PickViewRow[] = arr.map((r) => {
       const o = asRec(r)
@@ -174,7 +168,7 @@ export default function DraftPage() {
       }
     })
 
-    // 🔔 Toast: show the newest pick
+    // 🔔 Toast when a new pick is made
     if (showToast && mapped.length > picks.length) {
       const latest = mapped[mapped.length - 1]
       if (latest && latest.picked_team_short) {
@@ -240,9 +234,35 @@ export default function DraftPage() {
     players: playersR1,
   })
   const onClock = draftComplete ? '' : onClockPlayer.display_name
+  const isMyTurn = !draftComplete && myName && norm(onClock) === norm(myName)
 
   if (!week)
     return <div className="text-center mt-12 opacity-70">Loading current draft week…</div>
+
+  /* ----------------------------- picks & buttons ----------------------------- */
+
+  const pickedTeams = new Set<string>(
+    picks.filter((p) => p.picked_team_short).map((p) => p.picked_team_short!.toUpperCase())
+  )
+
+  async function makePick(row: BoardRow, team_short: string) {
+    if (!isMyTurn) return
+    const teamLine = team_short === row.home_short ? row.home_line : row.away_line
+    const { error } = await supabase.from('picks').insert([
+      {
+        season_year: YEAR,
+        pick_number: spreadPicksCount + 1,
+        player_display_name: myName,
+        team_short,
+        home_short: row.home_short,
+        away_short: row.away_short,
+        spread_at_pick: teamLine,
+        game_id: row.game_id,
+      },
+    ])
+    if (error) alert(error.message)
+    else loadPicksMerged(week!, true)
+  }
 
   /* ----------------------------- render ----------------------------- */
 
@@ -257,16 +277,16 @@ export default function DraftPage() {
       {!draftComplete ? (
         <div className="text-sm text-zinc-400">
           On the clock: <span className="text-zinc-100 font-medium">{onClock}</span>
-          {myName ? (
+          {myName && (
             <span className="ml-3">
               You are <span className="font-medium">{myName}</span> —{' '}
-              {norm(onClock) === norm(myName) ? (
+              {isMyTurn ? (
                 <span className="text-emerald-400 font-medium">your turn</span>
               ) : (
                 <span className="text-zinc-400">wait</span>
               )}
             </span>
-          ) : null}
+          )}
         </div>
       ) : (
         <div className="flex items-center justify-center gap-3 py-2 rounded bg-zinc-900/50 border border-zinc-800">
@@ -274,29 +294,44 @@ export default function DraftPage() {
         </div>
       )}
 
-      {/* Board */}
-      <section className="border rounded overflow-hidden">
-        <div className="grid grid-cols-[1fr,64px] text-xs px-3 py-2 bg-zinc-900/60 border-b">
-          <div>Game</div>
-          <div className="text-right">Total</div>
-        </div>
-        <div className="divide-y divide-zinc-800/60">
-          {board.map((r, i) => (
-            <div key={`${r.game_id}-${i}`} className="flex items-center justify-between px-3 py-2">
+      {/* Pick Buttons */}
+      <div className="grid md:grid-cols-2 gap-3">
+        {board.map((r) => {
+          const homeTaken = pickedTeams.has(r.home_short.toUpperCase())
+          const awayTaken = pickedTeams.has(r.away_short.toUpperCase())
+
+          return (
+            <div key={r.game_id} className="border rounded p-3 flex flex-col gap-2">
               <div className="flex items-center gap-2">
-                <img src={teamLogo(r.home_short) || ''} alt={r.home_short} className="w-4 h-4 rounded-sm" />
-                <span className="w-8 font-semibold">{r.home_short}</span>
-                <span className="ml-1 text-xs text-zinc-400">{fmtSigned(r.home_line)}</span>
+                <img src={teamLogo(r.home_short) || ''} className="w-4 h-4" alt={r.home_short} />
+                <span className="font-semibold">{r.home_short}</span>
+                <span className="text-xs text-zinc-400 ml-1">{fmtSigned(r.home_line)}</span>
                 <span className="text-zinc-500 mx-2">v</span>
-                <img src={teamLogo(r.away_short) || ''} alt={r.away_short} className="w-4 h-4 rounded-sm" />
-                <span className="w-8 font-semibold">{r.away_short}</span>
-                <span className="ml-1 text-xs text-zinc-400">{fmtSigned(r.away_line)}</span>
+                <img src={teamLogo(r.away_short) || ''} className="w-4 h-4" alt={r.away_short} />
+                <span className="font-semibold">{r.away_short}</span>
+                <span className="text-xs text-zinc-400 ml-1">{fmtSigned(r.away_line)}</span>
               </div>
-              <span className="w-12 text-right tabular-nums">{r.total ?? '—'}</span>
+
+              <div className="flex flex-wrap gap-2 mt-1">
+                <button
+                  className="border rounded px-2 py-1 text-sm disabled:opacity-40"
+                  disabled={!isMyTurn || homeTaken}
+                  onClick={() => makePick(r, r.home_short)}
+                >
+                  Pick {r.home_short} ({fmtSigned(r.home_line)})
+                </button>
+                <button
+                  className="border rounded px-2 py-1 text-sm disabled:opacity-40"
+                  disabled={!isMyTurn || awayTaken}
+                  onClick={() => makePick(r, r.away_short)}
+                >
+                  Pick {r.away_short} ({fmtSigned(r.away_line)})
+                </button>
+              </div>
             </div>
-          ))}
-        </div>
-      </section>
+          )
+        })}
+      </div>
 
       {/* Picks list */}
       <section className="border rounded overflow-hidden">
@@ -309,7 +344,8 @@ export default function DraftPage() {
               <li key={p.pick_id} className="px-3 py-2">
                 <strong>{p.player}</strong> picked{' '}
                 <strong>{p.picked_team_short}</strong>{' '}
-                {p.line_at_pick != null ? fmtSigned(p.line_at_pick) : ''} — {p.home_short} v {p.away_short}
+                {p.line_at_pick != null ? fmtSigned(p.line_at_pick) : ''} — {p.home_short} v{' '}
+                {p.away_short}
               </li>
             ))
           )}
