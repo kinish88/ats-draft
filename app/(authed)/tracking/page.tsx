@@ -4,12 +4,12 @@ import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
 /* --------------------------------------------------
-   Types
+   Types (simple + safe)
 -------------------------------------------------- */
 
 type AiResult = 'WIN' | 'LOSS' | 'PUSH' | null;
 
-type AiPick = {
+interface AiPick {
   id: number;
   season_year: number;
   week_number: number;
@@ -23,22 +23,20 @@ type AiPick = {
   confidence: number | null;
   notes: string | null;
   result: AiResult;
-};
+}
 
-type BoardGame = {
+interface GameRow {
   game_id: number;
   home_short: string;
   away_short: string;
-};
+}
 
 /* --------------------------------------------------
-   Utility
+   Small Helpers
 -------------------------------------------------- */
 
 function computeRecord(picks: AiPick[]) {
-  let wins = 0;
-  let losses = 0;
-  let pushes = 0;
+  let wins = 0, losses = 0, pushes = 0;
 
   for (const p of picks) {
     if (p.result === 'WIN') wins++;
@@ -53,14 +51,14 @@ function computeRecord(picks: AiPick[]) {
 }
 
 /* --------------------------------------------------
-   Page Component
+   Component
 -------------------------------------------------- */
 
 export default function AiTrackingPage() {
   const [year] = useState(2025);
   const [week, setWeek] = useState<number>(14);
 
-  const [games, setGames] = useState<BoardGame[]>([]);
+  const [games, setGames] = useState<GameRow[]>([]);
   const [picks, setPicks] = useState<AiPick[]>([]);
 
   const [newPick, setNewPick] = useState({
@@ -74,67 +72,53 @@ export default function AiTrackingPage() {
   });
 
   /* --------------------------------------------------
-     LOAD GAMES VIA RPC
+     Load games via RPC
   -------------------------------------------------- */
 
   const loadGames = useCallback(async () => {
     const { data, error } = await supabase.rpc('get_week_draft_board', {
       p_year: year,
-      p_week: week,
+      p_week: week
     });
 
-    if (error) {
-      console.error('loadGames RPC error:', error);
+    if (error || !data) {
+      console.error('RPC error loading games:', error);
       setGames([]);
       return;
     }
 
-    const mapped = (data ?? []).map((r: any) => ({
-      game_id: Number(r.game_id),
-      home_short: r.home_short,
-      away_short: r.away_short,
+    const mapped: GameRow[] = (data as unknown as any[]).map((row) => ({
+      game_id: Number(row.game_id),
+      home_short: row.home_short,
+      away_short: row.away_short,
     }));
 
     setGames(mapped);
   }, [year, week]);
 
   /* --------------------------------------------------
-     LOAD PICKS — FIXED TO USE PUBLIC.ai_recommendations
+     Load picks
   -------------------------------------------------- */
 
   const loadPicks = useCallback(async () => {
     const { data, error } = await supabase
-      .from('ai_recommendations') // FIXED
-      .select(
-        `
-        *,
-        game:game_id (
-          home_short,
-          away_short
-        )
-      `
-      )
+      .from('ai_recommendations')
+      .select('*')
       .eq('season_year', year)
       .eq('week_number', week)
-      .order('id');
+      .order('id', { ascending: true });
 
-    if (error) {
-      console.error('loadPicks error:', error);
+    if (error || !data) {
+      console.error('Error loading picks:', error);
       setPicks([]);
       return;
     }
 
-    const mapped = (data ?? []).map((row: any) => ({
-      ...row,
-      home_short: row.game?.home_short ?? null,
-      away_short: row.game?.away_short ?? null,
-    }));
-
-    setPicks(mapped);
+    setPicks(data as unknown as AiPick[]);
   }, [year, week]);
 
   /* --------------------------------------------------
-     ADD NEW PICK — FIXED TO USE PUBLIC.ai_recommendations
+     Add Pick
   -------------------------------------------------- */
 
   const addNewPick = async () => {
@@ -163,10 +147,10 @@ export default function AiTrackingPage() {
     };
 
     const { error } = await supabase
-      .from('ai_recommendations') // FIXED
+      .from('ai_recommendations')
       .insert([payload]);
 
-    if (error) console.error('Add pick error:', error);
+    if (error) console.error('Insert error:', error);
 
     await loadPicks();
 
@@ -182,7 +166,7 @@ export default function AiTrackingPage() {
   };
 
   /* --------------------------------------------------
-     EFFECTS
+     Effects
   -------------------------------------------------- */
 
   useEffect(() => {
@@ -191,13 +175,13 @@ export default function AiTrackingPage() {
   }, [loadGames, loadPicks]);
 
   /* --------------------------------------------------
-     SUMMARY
+     Summary
   -------------------------------------------------- */
 
-  const overall = computeRecord(picks);
+  const summary = computeRecord(picks);
 
   /* --------------------------------------------------
-     RENDER
+     Render
   -------------------------------------------------- */
 
   return (
@@ -206,8 +190,9 @@ export default function AiTrackingPage() {
         AI Picks Tracking – Week {week}
       </h1>
 
+      {/* Week selector */}
       <div className="flex gap-3 items-center">
-        <label className="text-sm opacity-70">Week</label>
+        <label className="text-sm">Week</label>
         <select
           className="border bg-zinc-900 p-1 rounded"
           value={week}
@@ -226,16 +211,14 @@ export default function AiTrackingPage() {
         <h2 className="text-lg font-medium">Add AI Pick</h2>
 
         <div className="grid md:grid-cols-3 gap-3">
+          {/* Game */}
           <div>
             <label className="text-sm">Game</label>
             <select
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.game_id}
               onChange={(e) =>
-                setNewPick((p) => ({
-                  ...p,
-                  game_id: Number(e.target.value),
-                }))
+                setNewPick({ ...newPick, game_id: Number(e.target.value) })
               }
             >
               <option value={0}>Select game…</option>
@@ -247,18 +230,19 @@ export default function AiTrackingPage() {
             </select>
           </div>
 
+          {/* Pick type */}
           <div>
             <label className="text-sm">Pick Type</label>
             <select
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.pick_type}
               onChange={(e) =>
-                setNewPick((p) => ({
-                  ...p,
+                setNewPick({
+                  ...newPick,
                   pick_type: e.target.value as 'spread' | 'ou',
                   team_short: '',
                   ou_side: '',
-                }))
+                })
               }
             >
               <option value="spread">Spread</option>
@@ -266,21 +250,20 @@ export default function AiTrackingPage() {
             </select>
           </div>
 
+          {/* Line / total */}
           <div>
             <label className="text-sm">Line / Total</label>
             <input
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.line_or_total}
               onChange={(e) =>
-                setNewPick((p) => ({
-                  ...p,
-                  line_or_total: e.target.value,
-                }))
+                setNewPick({ ...newPick, line_or_total: e.target.value })
               }
             />
           </div>
         </div>
 
+        {/* Spread */}
         {newPick.pick_type === 'spread' && (
           <div>
             <label className="text-sm">Team (short code)</label>
@@ -288,15 +271,16 @@ export default function AiTrackingPage() {
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.team_short}
               onChange={(e) =>
-                setNewPick((p) => ({
-                  ...p,
+                setNewPick({
+                  ...newPick,
                   team_short: e.target.value.toUpperCase(),
-                }))
+                })
               }
             />
           </div>
         )}
 
+        {/* O/U */}
         {newPick.pick_type === 'ou' && (
           <div>
             <label className="text-sm">Side</label>
@@ -304,10 +288,7 @@ export default function AiTrackingPage() {
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.ou_side}
               onChange={(e) =>
-                setNewPick((p) => ({
-                  ...p,
-                  ou_side: e.target.value,
-                }))
+                setNewPick({ ...newPick, ou_side: e.target.value })
               }
             >
               <option value="">Select…</option>
@@ -317,6 +298,7 @@ export default function AiTrackingPage() {
           </div>
         )}
 
+        {/* Confidence + Notes */}
         <div className="grid md:grid-cols-2 gap-3">
           <div>
             <label className="text-sm">Confidence (0–100)</label>
@@ -325,10 +307,7 @@ export default function AiTrackingPage() {
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.confidence}
               onChange={(e) =>
-                setNewPick((p) => ({
-                  ...p,
-                  confidence: e.target.value,
-                }))
+                setNewPick({ ...newPick, confidence: e.target.value })
               }
             />
           </div>
@@ -339,10 +318,7 @@ export default function AiTrackingPage() {
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.notes}
               onChange={(e) =>
-                setNewPick((p) => ({
-                  ...p,
-                  notes: e.target.value,
-                }))
+                setNewPick({ ...newPick, notes: e.target.value })
               }
             />
           </div>
@@ -356,16 +332,16 @@ export default function AiTrackingPage() {
         </button>
       </section>
 
-      {/* AI Picks */}
+      {/* Picks list */}
       <section className="border rounded p-4">
-        <h2 className="text-lg font-medium mb-3">AI Picks</h2>
+        <h2 className="text-lg font-medium mb-2">AI Picks</h2>
 
         {picks.length === 0 ? (
           <p className="text-zinc-400 text-sm">No picks this week.</p>
         ) : (
-          <ul className="divide-y divide-zinc-800">
+          <ul className="divide-y divide-zinc-800 text-sm">
             {picks.map((p) => (
-              <li key={p.id} className="py-2 text-sm">
+              <li key={p.id} className="py-2">
                 <strong>{p.pick_type.toUpperCase()}</strong> —{' '}
                 {p.pick_type === 'spread'
                   ? `${p.team_short} ${p.line_or_total}`
@@ -379,28 +355,20 @@ export default function AiTrackingPage() {
 
       {/* Summary */}
       <section className="border rounded p-4">
-        <h2 className="text-lg font-medium mb-3">Summary (This Week)</h2>
+        <h2 className="text-lg font-medium">Summary (This Week)</h2>
 
         <p className="text-sm text-zinc-300">
-          Picks: {overall.total} — Wins:{' '}
-          <span className="text-emerald-400 font-semibold">
-            {overall.wins}
-          </span>{' '}
-          Losses:{' '}
-          <span className="text-red-400 font-semibold">
-            {overall.losses}
-          </span>{' '}
-          Pushes:{' '}
-          <span className="text-zinc-400 font-semibold">
-            {overall.pushes}
-          </span>
+          Picks: {summary.total} — Wins:{' '}
+          <span className="text-emerald-400">{summary.wins}</span> Losses:{' '}
+          <span className="text-red-400">{summary.losses}</span> Pushes:{' '}
+          <span className="text-zinc-400">{summary.pushes}</span>
         </p>
 
         <p className="text-sm text-zinc-300 mt-1">
           Hit rate:{' '}
-          <span className="font-semibold">
-            {overall.total > 0 ? `${overall.winRate.toFixed(1)}%` : '—'}
-          </span>
+          {summary.total > 0
+            ? `${summary.winRate.toFixed(1)}%`
+            : '—'}
         </p>
       </section>
     </div>
