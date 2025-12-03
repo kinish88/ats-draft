@@ -14,8 +14,8 @@ type AiPick = {
   season_year: number;
   week_number: number;
   game_id: number;
-  home_short: string;
-  away_short: string;
+  home_short: string | null;
+  away_short: string | null;
   pick_type: 'spread' | 'ou';
   team_short: string | null;
   ou_side: 'over' | 'under' | null;
@@ -31,65 +31,29 @@ type BoardGame = {
   away_short: string;
 };
 
-type TeamStat = {
-  team: string;
-  wins: number;
-  losses: number;
-  pushes: number;
-  total: number;
-  winRate: number;
-};
-
-type OuSideStat = {
-  side: 'over' | 'under';
-  wins: number;
-  losses: number;
-  pushes: number;
-  total: number;
-  winRate: number;
-};
-
-type ConfidenceBucket = {
-  label: string;
-  min: number;
-  max: number;
-  wins: number;
-  losses: number;
-  pushes: number;
-  total: number;
-  winRate: number;
-};
-
 /* --------------------------------------------------
-   Helpers
+   Utility: compute W/L/P
 -------------------------------------------------- */
-
-function computeRecord(picks: AiPick[]): {
-  wins: number;
-  losses: number;
-  pushes: number;
-  total: number;
-  winRate: number;
-} {
+function computeRecord(picks: AiPick[]) {
   let wins = 0;
   let losses = 0;
   let pushes = 0;
 
   for (const p of picks) {
-    if (p.result === 'WIN') wins += 1;
-    else if (p.result === 'LOSS') losses += 1;
-    else if (p.result === 'PUSH') pushes += 1;
+    if (p.result === 'WIN') wins++;
+    else if (p.result === 'LOSS') losses++;
+    else if (p.result === 'PUSH') pushes++;
   }
 
   const total = wins + losses + pushes;
   const winRate = total > 0 ? (wins / total) * 100 : 0;
+
   return { wins, losses, pushes, total, winRate };
 }
 
 /* --------------------------------------------------
-   Component
+   Page Component
 -------------------------------------------------- */
-
 export default function AiTrackingPage() {
   const [year] = useState(2025);
   const [week, setWeek] = useState<number>(14);
@@ -107,11 +71,8 @@ export default function AiTrackingPage() {
     notes: '',
   });
 
-  // use the tracking schema explicitly
-  const tracking = supabase.schema('tracking');
-
   /* --------------------------------------------------
-     Load games for this week (via draft board RPC)
+     Load games via RPC (best method)
   -------------------------------------------------- */
 
   const loadGames = useCallback(async () => {
@@ -121,28 +82,34 @@ export default function AiTrackingPage() {
     });
 
     if (error) {
-      console.error('loadGames error', error);
+      console.error('loadGames RPC error', error);
       setGames([]);
       return;
     }
 
-    const rows = (data ?? []) as any[];
-    const mapped: BoardGame[] = rows.map((r) => ({
+    type RpcRow = {
+      game_id: number;
+      home_short: string;
+      away_short: string;
+    };
+
+    const rows: RpcRow[] = (data ?? []) as RpcRow[];
+
+    const mapped = rows.map((r) => ({
       game_id: Number(r.game_id),
-      home_short: String(r.home_short),
-      away_short: String(r.away_short),
+      home_short: r.home_short,
+      away_short: r.away_short,
     }));
 
     setGames(mapped);
-  }, [week, year]);
+  }, [year, week]);
 
   /* --------------------------------------------------
      Load AI picks
   -------------------------------------------------- */
-
   const loadPicks = useCallback(async () => {
-    const { data, error } = await tracking
-      .from('ai_recommendations')
+    const { data, error } = await supabase
+      .from('tracking.ai_recommendations')
       .select('*')
       .eq('season_year', year)
       .eq('week_number', week)
@@ -155,92 +122,37 @@ export default function AiTrackingPage() {
     }
 
     setPicks((data as AiPick[]) || []);
-  }, [tracking, week, year]);
+  }, [year, week]);
 
   /* --------------------------------------------------
-     Score AI Picks (auto) – per selected week
+     Add new AI Pick
   -------------------------------------------------- */
-
-  const scorePicks = async () => {
-    type ScoreGame = { id: number; home_score: number | null; away_score: number | null };
-
-    const { data, error } = await supabase
-      .from('games')
-      .select('id, home_score, away_score')
-      .eq('kickoff_year', year)
-      .eq('week_id', week);
-
-    if (error) {
-      console.error('scorePicks load games error', error);
-      return;
-    }
-
-    const gameMap = new Map<number, ScoreGame>();
-    (data ?? []).forEach((g) => gameMap.set((g as ScoreGame).id, g as ScoreGame));
-
-    for (const p of picks) {
-      const g = gameMap.get(p.game_id);
-      if (!g || g.home_score == null || g.away_score == null) continue;
-
-      let result: AiResult = 'PUSH';
-
-      const diff = g.home_score - g.away_score; // home - away
-      const total = g.home_score + g.away_score;
-
-      if (p.pick_type === 'spread' && p.team_short && p.line_or_total != null) {
-        const teamIsHome =
-          p.home_short &&
-          p.team_short.toUpperCase() === p.home_short.toUpperCase();
-
-        const margin = teamIsHome ? diff : -diff;
-        if (margin > -p.line_or_total) result = 'WIN';
-        else if (margin < -p.line_or_total) result = 'LOSS';
-        else result = 'PUSH';
-      }
-
-      if (p.pick_type === 'ou' && p.ou_side && p.line_or_total != null) {
-        if (total > p.line_or_total && p.ou_side === 'over') result = 'WIN';
-        else if (total < p.line_or_total && p.ou_side === 'under') result = 'WIN';
-        else if (total === p.line_or_total) result = 'PUSH';
-        else result = 'LOSS';
-      }
-
-      await tracking
-        .from('ai_recommendations')
-        .update({ result })
-        .eq('id', p.id);
-    }
-
-    loadPicks();
-  };
-
-  /* --------------------------------------------------
-     Add New AI Pick
-  -------------------------------------------------- */
-
   const addNewPick = async () => {
     if (!newPick.game_id) return;
 
-    const game = games.find((g) => g.game_id === Number(newPick.game_id));
+    const insertPayload = {
+      season_year: year,
+      week_number: week,
+      game_id: Number(newPick.game_id),
+      pick_type: newPick.pick_type,
+      team_short:
+        newPick.pick_type === 'spread' ? newPick.team_short.toUpperCase() : null,
+      ou_side:
+        newPick.pick_type === 'ou' && newPick.ou_side
+          ? (newPick.ou_side as 'over' | 'under')
+          : null,
+      line_or_total: newPick.line_or_total
+        ? Number(newPick.line_or_total)
+        : null,
+      confidence: newPick.confidence ? Number(newPick.confidence) : null,
+      notes: newPick.notes || null,
+    };
 
-    await tracking.from('ai_recommendations').insert([
-      {
-        season_year: year,
-        week_number: week,
-        game_id: Number(newPick.game_id),
-        home_short: game?.home_short ?? null,
-        away_short: game?.away_short ?? null,
-        pick_type: newPick.pick_type, // must be 'spread' or 'ou'
-        team_short: newPick.pick_type === 'spread' ? newPick.team_short || null : null,
-        ou_side:
-          newPick.pick_type === 'ou' && newPick.ou_side
-            ? (newPick.ou_side as 'over' | 'under')
-            : null,
-        line_or_total: newPick.line_or_total ? Number(newPick.line_or_total) : null,
-        confidence: newPick.confidence ? Number(newPick.confidence) : null,
-        notes: newPick.notes || null,
-      },
-    ]);
+    const { error } = await supabase
+      .from('tracking.ai_recommendations')
+      .insert([insertPayload]);
+
+    if (error) console.error('Add pick error', error);
 
     await loadPicks();
 
@@ -256,16 +168,15 @@ export default function AiTrackingPage() {
   };
 
   /* --------------------------------------------------
-     Effects
+     Effect: Load games + picks
   -------------------------------------------------- */
-
   useEffect(() => {
     loadGames();
     loadPicks();
   }, [loadGames, loadPicks]);
 
   /* --------------------------------------------------
-     Basic summary
+     Summary & Analytics
   -------------------------------------------------- */
 
   const overall = computeRecord(picks);
@@ -276,105 +187,14 @@ export default function AiTrackingPage() {
   const ouSummary = computeRecord(ouPicks);
 
   /* --------------------------------------------------
-     Team-level spread stats
-  -------------------------------------------------- */
-
-  const teamStats: TeamStat[] = (() => {
-    const map = new Map<string, TeamStat>();
-
-    for (const p of spreadPicks) {
-      if (!p.team_short) continue;
-      const key = p.team_short.toUpperCase();
-      if (!map.has(key)) {
-        map.set(key, {
-          team: key,
-          wins: 0,
-          losses: 0,
-          pushes: 0,
-          total: 0,
-          winRate: 0,
-        });
-      }
-      const stat = map.get(key)!;
-      if (p.result === 'WIN') stat.wins += 1;
-      else if (p.result === 'LOSS') stat.losses += 1;
-      else if (p.result === 'PUSH') stat.pushes += 1;
-      stat.total += 1;
-    }
-
-    for (const s of map.values()) {
-      s.winRate = s.total > 0 ? (s.wins / s.total) * 100 : 0;
-    }
-
-    return Array.from(map.values()).sort((a, b) => b.winRate - a.winRate);
-  })();
-
-  const topTeams = teamStats.filter((t) => t.total >= 2).slice(0, 3);
-
-  /* --------------------------------------------------
-     O/U side stats
-  -------------------------------------------------- */
-
-  const ouSideStats: OuSideStat[] = (() => {
-    const base: { [k in 'over' | 'under']: OuSideStat } = {
-      over: { side: 'over', wins: 0, losses: 0, pushes: 0, total: 0, winRate: 0 },
-      under: { side: 'under', wins: 0, losses: 0, pushes: 0, total: 0, winRate: 0 },
-    };
-
-    for (const p of ouPicks) {
-      if (!p.ou_side) continue;
-      const stat = base[p.ou_side];
-      if (p.result === 'WIN') stat.wins += 1;
-      else if (p.result === 'LOSS') stat.losses += 1;
-      else if (p.result === 'PUSH') stat.pushes += 1;
-      stat.total += 1;
-    }
-
-    for (const s of Object.values(base)) {
-      s.winRate = s.total > 0 ? (s.wins / s.total) * 100 : 0;
-    }
-
-    return [base.over, base.under];
-  })();
-
-  /* --------------------------------------------------
-     Confidence buckets
-  -------------------------------------------------- */
-
-  const confidenceBuckets: ConfidenceBucket[] = (() => {
-    const buckets: ConfidenceBucket[] = [
-      { label: '0–20', min: 0, max: 20, wins: 0, losses: 0, pushes: 0, total: 0, winRate: 0 },
-      { label: '20–40', min: 20, max: 40, wins: 0, losses: 0, pushes: 0, total: 0, winRate: 0 },
-      { label: '40–60', min: 40, max: 60, wins: 0, losses: 0, pushes: 0, total: 0, winRate: 0 },
-      { label: '60–80', min: 60, max: 80, wins: 0, losses: 0, pushes: 0, total: 0, winRate: 0 },
-      { label: '80–100', min: 80, max: 100.0001, wins: 0, losses: 0, pushes: 0, total: 0, winRate: 0 },
-    ];
-
-    for (const p of picks) {
-      if (p.confidence == null) continue;
-      const c = p.confidence;
-      const bucket = buckets.find((b) => c >= b.min && c < b.max);
-      if (!bucket) continue;
-      if (p.result === 'WIN') bucket.wins += 1;
-      else if (p.result === 'LOSS') bucket.losses += 1;
-      else if (p.result === 'PUSH') bucket.pushes += 1;
-      bucket.total += 1;
-    }
-
-    for (const b of buckets) {
-      b.winRate = b.total > 0 ? (b.wins / b.total) * 100 : 0;
-    }
-
-    return buckets;
-  })();
-
-  /* --------------------------------------------------
      Render
   -------------------------------------------------- */
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-8">
-      <h1 className="text-xl font-semibold">AI Picks Tracking – Week {week}</h1>
+      <h1 className="text-xl font-semibold">
+        AI Picks Tracking – Week {week}
+      </h1>
 
       {/* Week selector */}
       <div className="flex gap-3 items-center">
@@ -392,24 +212,6 @@ export default function AiTrackingPage() {
         </select>
       </div>
 
-      {/* Overall Summary */}
-      <section className="border rounded p-4">
-        <h2 className="text-lg font-medium mb-2">Overall Summary (This Week)</h2>
-        <p className="text-sm text-zinc-300">
-          Total picks:{' '}
-          <span className="font-semibold">{overall.total}</span> — Wins:{' '}
-          <span className="text-emerald-400 font-semibold">{overall.wins}</span> — Losses:{' '}
-          <span className="text-red-400 font-semibold">{overall.losses}</span> — Pushes:{' '}
-          <span className="text-zinc-400 font-semibold">{overall.pushes}</span>
-        </p>
-        <p className="text-sm text-zinc-300 mt-1">
-          Hit rate:{' '}
-          <span className="font-semibold">
-            {overall.total > 0 ? `${overall.winRate.toFixed(1)}%` : '—'}
-          </span>
-        </p>
-      </section>
-
       {/* Add AI Pick */}
       <section className="border rounded p-4 space-y-3">
         <h2 className="text-lg font-medium">Add AI Pick</h2>
@@ -421,7 +223,10 @@ export default function AiTrackingPage() {
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.game_id}
               onChange={(e) =>
-                setNewPick((p) => ({ ...p, game_id: Number(e.target.value) }))
+                setNewPick((p) => ({
+                  ...p,
+                  game_id: Number(e.target.value),
+                }))
               }
             >
               <option value={0}>Select game…</option>
@@ -439,11 +244,11 @@ export default function AiTrackingPage() {
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.pick_type}
               onChange={(e) =>
-                setNewPick((prev) => ({
-                  ...prev,
+                setNewPick((p) => ({
+                  ...p,
                   pick_type: e.target.value as 'spread' | 'ou',
-                  team_short: e.target.value === 'spread' ? prev.team_short : '',
-                  ou_side: e.target.value === 'ou' ? prev.ou_side : '',
+                  team_short: '',
+                  ou_side: '',
                 }))
               }
             >
@@ -458,13 +263,15 @@ export default function AiTrackingPage() {
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.line_or_total}
               onChange={(e) =>
-                setNewPick({ ...newPick, line_or_total: e.target.value })
+                setNewPick((p) => ({
+                  ...p,
+                  line_or_total: e.target.value,
+                }))
               }
             />
           </div>
         </div>
 
-        {/* Spread fields */}
         {newPick.pick_type === 'spread' && (
           <div>
             <label className="text-sm">Team (short code)</label>
@@ -472,16 +279,15 @@ export default function AiTrackingPage() {
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.team_short}
               onChange={(e) =>
-                setNewPick({
-                  ...newPick,
+                setNewPick((p) => ({
+                  ...p,
                   team_short: e.target.value.toUpperCase(),
-                })
+                }))
               }
             />
           </div>
         )}
 
-        {/* O/U fields */}
         {newPick.pick_type === 'ou' && (
           <div>
             <label className="text-sm">Side</label>
@@ -489,7 +295,10 @@ export default function AiTrackingPage() {
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.ou_side}
               onChange={(e) =>
-                setNewPick({ ...newPick, ou_side: e.target.value })
+                setNewPick((p) => ({
+                  ...p,
+                  ou_side: e.target.value,
+                }))
               }
             >
               <option value="">Select…</option>
@@ -507,17 +316,24 @@ export default function AiTrackingPage() {
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.confidence}
               onChange={(e) =>
-                setNewPick({ ...newPick, confidence: e.target.value })
+                setNewPick((p) => ({
+                  ...p,
+                  confidence: e.target.value,
+                }))
               }
             />
           </div>
+
           <div>
             <label className="text-sm">Notes (optional)</label>
             <input
               className="border bg-zinc-900 p-1 rounded w-full"
               value={newPick.notes}
               onChange={(e) =>
-                setNewPick({ ...newPick, notes: e.target.value })
+                setNewPick((p) => ({
+                  ...p,
+                  notes: e.target.value,
+                }))
               }
             />
           </div>
@@ -542,169 +358,13 @@ export default function AiTrackingPage() {
               <li key={p.id} className="py-2 text-sm">
                 <strong>{p.pick_type.toUpperCase()}</strong> —{' '}
                 {p.pick_type === 'spread'
-                  ? `${p.team_short ?? ''} ${p.line_or_total ?? ''}`
-                  : `${p.ou_side?.toUpperCase() ?? ''} ${p.line_or_total ?? ''}`}{' '}
-                ({p.home_short} vs {p.away_short}){' '}
-                {p.result ? (
-                  <span
-                    className={
-                      p.result === 'WIN'
-                        ? 'text-emerald-400'
-                        : p.result === 'LOSS'
-                        ? 'text-red-400'
-                        : 'text-zinc-400'
-                    }
-                  >
-                    — {p.result}
-                  </span>
-                ) : null}
+                  ? `${p.team_short} ${p.line_or_total}`
+                  : `${p.ou_side?.toUpperCase()} ${p.line_or_total}`}{' '}
+                ({p.home_short} vs {p.away_short})
               </li>
             ))}
           </ul>
         )}
-
-        <button
-          onClick={scorePicks}
-          className="mt-3 px-3 py-1 border rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
-        >
-          Score Week
-        </button>
-      </section>
-
-      {/* Analytics */}
-      <section className="border rounded p-4 space-y-4">
-        <h2 className="text-lg font-medium">Analytics (This Week)</h2>
-
-        {/* Spread vs O/U */}
-        <div className="grid md:grid-cols-2 gap-4">
-          <div>
-            <h3 className="text-sm font-semibold mb-1">Spread Picks</h3>
-            <p className="text-xs text-zinc-300 mb-1">
-              {spreadSummary.total > 0 ? (
-                <>
-                  {spreadSummary.wins}–{spreadSummary.losses}
-                  {spreadSummary.pushes ? ` (${spreadSummary.pushes} push)` : ''} —{' '}
-                  {spreadSummary.winRate.toFixed(1)}%
-                </>
-              ) : (
-                'No spread picks.'
-              )}
-            </p>
-            {spreadSummary.total > 0 && (
-              <div className="h-2 w-full bg-zinc-800 rounded">
-                <div
-                  className="h-2 rounded bg-emerald-500"
-                  style={{ width: `${spreadSummary.winRate}%` }}
-                />
-              </div>
-            )}
-          </div>
-
-          <div>
-            <h3 className="text-sm font-semibold mb-1">O/U Picks</h3>
-            <p className="text-xs text-zinc-300 mb-1">
-              {ouSummary.total > 0 ? (
-                <>
-                  {ouSummary.wins}–{ouSummary.losses}
-                  {ouSummary.pushes ? ` (${ouSummary.pushes} push)` : ''} —{' '}
-                  {ouSummary.winRate.toFixed(1)}%
-                </>
-              ) : (
-                'No O/U picks.'
-              )}
-            </p>
-            {ouSummary.total > 0 && (
-              <div className="h-2 w-full bg-zinc-800 rounded">
-                <div
-                  className="h-2 rounded bg-sky-500"
-                  style={{ width: `${ouSummary.winRate}%` }}
-                />
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Top Teams */}
-        <div>
-          <h3 className="text-sm font-semibold mb-2">Best Teams (Spread, this week)</h3>
-          {topTeams.length === 0 ? (
-            <p className="text-xs text-zinc-400">Not enough data (need ≥ 2 picks per team).</p>
-          ) : (
-            <ul className="space-y-1 text-xs">
-              {topTeams.map((t) => (
-                <li key={t.team} className="flex items-center justify-between">
-                  <span>
-                    {t.team} — {t.wins}-{t.losses}
-                    {t.pushes ? ` (${t.pushes} push)` : ''}
-                  </span>
-                  <span className="text-emerald-400 font-semibold">
-                    {t.winRate.toFixed(1)}%
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* O/U sides */}
-        <div>
-          <h3 className="text-sm font-semibold mb-2">O/U Side Performance</h3>
-          {ouSideStats.every((s) => s.total === 0) ? (
-            <p className="text-xs text-zinc-400">No O/U picks yet.</p>
-          ) : (
-            <div className="grid md:grid-cols-2 gap-3 text-xs">
-              {ouSideStats.map((s) => (
-                <div key={s.side} className="border border-zinc-800 rounded p-2">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-semibold uppercase">{s.side}</span>
-                    <span>
-                      {s.wins}–{s.losses}
-                      {s.pushes ? ` (${s.pushes} push)` : ''}
-                    </span>
-                  </div>
-                  {s.total > 0 && (
-                    <div className="h-2 w-full bg-zinc-800 rounded">
-                      <div
-                        className="h-2 rounded bg-purple-500"
-                        style={{ width: `${s.winRate}%` }}
-                      />
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Confidence buckets */}
-        <div>
-          <h3 className="text-sm font-semibold mb-2">Confidence vs Hit Rate</h3>
-          {confidenceBuckets.every((b) => b.total === 0) ? (
-            <p className="text-xs text-zinc-400">
-              No confidence values recorded yet for this week.
-            </p>
-          ) : (
-            <div className="space-y-2 text-xs">
-              {confidenceBuckets.map((b) => (
-                <div key={b.label}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span>{b.label}%</span>
-                    <span>
-                      {b.total} picks —{' '}
-                      {b.total > 0 ? `${b.winRate.toFixed(1)}% hit` : '—'}
-                    </span>
-                  </div>
-                  <div className="h-2 w-full bg-zinc-800 rounded">
-                    <div
-                      className="h-2 rounded bg-amber-500"
-                      style={{ width: `${b.winRate}%` }}
-                    />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
       </section>
     </div>
   );
