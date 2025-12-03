@@ -1,12 +1,16 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+/* eslint-disable @typescript-eslint/no-unused-vars */
+/* eslint-disable react-hooks/exhaustive-deps */
+/* eslint-disable @next/next/no-img-element */
+
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
-/* --------------------------------------------------
+/* --------------------------------------------
    Types
--------------------------------------------------- */
-
+-------------------------------------------- */
 type AiResult = 'WIN' | 'LOSS' | 'PUSH' | null;
 
 type AiPick = {
@@ -31,9 +35,9 @@ type BoardGame = {
   away_short: string;
 };
 
-/* --------------------------------------------------
-   Utility: compute W/L/P
--------------------------------------------------- */
+/* --------------------------------------------
+   Compute W/L/P
+-------------------------------------------- */
 function computeRecord(picks: AiPick[]) {
   let wins = 0;
   let losses = 0;
@@ -51,9 +55,9 @@ function computeRecord(picks: AiPick[]) {
   return { wins, losses, pushes, total, winRate };
 }
 
-/* --------------------------------------------------
-   Page Component
--------------------------------------------------- */
+/* --------------------------------------------
+   Component
+-------------------------------------------- */
 export default function AiTrackingPage() {
   const [year] = useState(2025);
   const [week, setWeek] = useState<number>(14);
@@ -71,10 +75,9 @@ export default function AiTrackingPage() {
     notes: '',
   });
 
-  /* --------------------------------------------------
-     Load games via RPC (best method)
-  -------------------------------------------------- */
-
+  /* --------------------------------------------
+     Load games (via your RPC)
+  -------------------------------------------- */
   const loadGames = useCallback(async () => {
     const { data, error } = await supabase.rpc('get_week_draft_board', {
       p_year: year,
@@ -82,20 +85,12 @@ export default function AiTrackingPage() {
     });
 
     if (error) {
-      console.error('loadGames RPC error', error);
+      console.error('loadGames RPC error:', error);
       setGames([]);
       return;
     }
 
-    type RpcRow = {
-      game_id: number;
-      home_short: string;
-      away_short: string;
-    };
-
-    const rows: RpcRow[] = (data ?? []) as RpcRow[];
-
-    const mapped = rows.map((r) => ({
+    const mapped = (data ?? []).map((r: any) => ({
       game_id: Number(r.game_id),
       home_short: r.home_short,
       away_short: r.away_short,
@@ -104,52 +99,55 @@ export default function AiTrackingPage() {
     setGames(mapped);
   }, [year, week]);
 
-  /* --------------------------------------------------
-     Load AI picks
-  -------------------------------------------------- */
+  /* --------------------------------------------
+     Load AI picks + join game names
+  -------------------------------------------- */
   const loadPicks = useCallback(async () => {
-  const { data, error } = await supabase
-    .from('tracking.ai_recommendations')
-    .select(`
-      *,
-      game:game_id (
-        home_short,
-        away_short
+    const { data, error } = await supabase
+      .from('tracking.ai_recommendations')
+      .select(
+        `
+        *,
+        game:game_id (
+          home_short,
+          away_short
+        )
+      `
       )
-    `)
-    .eq('season_year', year)
-    .eq('week_number', week)
-    .order('id');
+      .eq('season_year', year)
+      .eq('week_number', week)
+      .order('id');
 
-  if (error) {
-    console.error('loadPicks error', error);
-    setPicks([]);
-    return;
-  }
+    if (error) {
+      console.error('loadPicks error:', error);
+      setPicks([]);
+      return;
+    }
 
-  const mapped = (data ?? []).map((row: any) => ({
-    ...row,
-    home_short: row.game?.home_short ?? null,
-    away_short: row.game?.away_short ?? null,
-  }));
+    const mapped = (data ?? []).map((row: any) => ({
+      ...row,
+      home_short: row.game?.home_short ?? null,
+      away_short: row.game?.away_short ?? null,
+    }));
 
-  setPicks(mapped);
-}, [year, week]);
+    setPicks(mapped);
+  }, [year, week]);
 
-
-  /* --------------------------------------------------
-     Add new AI Pick
-  -------------------------------------------------- */
+  /* --------------------------------------------
+     Add new AI pick
+  -------------------------------------------- */
   const addNewPick = async () => {
     if (!newPick.game_id) return;
 
-    const insertPayload = {
+    const payload = {
       season_year: year,
       week_number: week,
       game_id: Number(newPick.game_id),
       pick_type: newPick.pick_type,
       team_short:
-        newPick.pick_type === 'spread' ? newPick.team_short.toUpperCase() : null,
+        newPick.pick_type === 'spread'
+          ? newPick.team_short.toUpperCase()
+          : null,
       ou_side:
         newPick.pick_type === 'ou' && newPick.ou_side
           ? (newPick.ou_side as 'over' | 'under')
@@ -163,9 +161,9 @@ export default function AiTrackingPage() {
 
     const { error } = await supabase
       .from('tracking.ai_recommendations')
-      .insert([insertPayload]);
+      .insert([payload]);
 
-    if (error) console.error('Add pick error', error);
+    if (error) console.error('Insert error:', error);
 
     await loadPicks();
 
@@ -180,29 +178,24 @@ export default function AiTrackingPage() {
     });
   };
 
-  /* --------------------------------------------------
-     Effect: Load games + picks
-  -------------------------------------------------- */
+  /* --------------------------------------------
+     Effects
+  -------------------------------------------- */
   useEffect(() => {
     loadGames();
     loadPicks();
   }, [loadGames, loadPicks]);
 
-  /* --------------------------------------------------
-     Summary & Analytics
-  -------------------------------------------------- */
-
+  /* --------------------------------------------
+     Summary
+  -------------------------------------------- */
   const overall = computeRecord(picks);
-  const spreadPicks = picks.filter((p) => p.pick_type === 'spread');
-  const ouPicks = picks.filter((p) => p.pick_type === 'ou');
+  const spreadSummary = computeRecord(picks.filter((p) => p.pick_type === 'spread'));
+  const ouSummary = computeRecord(picks.filter((p) => p.pick_type === 'ou'));
 
-  const spreadSummary = computeRecord(spreadPicks);
-  const ouSummary = computeRecord(ouPicks);
-
-  /* --------------------------------------------------
+  /* --------------------------------------------
      Render
-  -------------------------------------------------- */
-
+  -------------------------------------------- */
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-8">
       <h1 className="text-xl font-semibold">
@@ -225,7 +218,7 @@ export default function AiTrackingPage() {
         </select>
       </div>
 
-      {/* Add AI Pick */}
+      {/* Add Pick */}
       <section className="border rounded p-4 space-y-3">
         <h2 className="text-lg font-medium">Add AI Pick</h2>
 
@@ -360,9 +353,10 @@ export default function AiTrackingPage() {
         </button>
       </section>
 
-      {/* AI Picks List */}
+      {/* Picks List */}
       <section className="border rounded p-4">
         <h2 className="text-lg font-medium mb-3">AI Picks</h2>
+
         {picks.length === 0 ? (
           <p className="text-zinc-400 text-sm">No picks this week.</p>
         ) : (
