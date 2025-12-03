@@ -1,273 +1,342 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
-/* ---------------------------- Types ---------------------------- */
-
-type TrackingWeek = {
-  season_year: number;
-  week_number: number;
-};
-
-type UserPick = {
-  id: number;
-  season_year: number;
-  week_number: number;
-  pick_type: 'spread' | 'ou';
-  team_short: string;
-  pick_value: string;
-  game_id: number | null;
-  result: string | null;
-};
+/* --------------------------------------------------
+   Types
+-------------------------------------------------- */
 
 type AiPick = {
   id: number;
   season_year: number;
   week_number: number;
-  home_short: string;
-  away_short: string;
-  pick_type: 'spread' | 'ou';
-  recommendation: string;
-  confidence: number | null;
-};
-
-type GameResult = {
-  id: number;
   game_id: number;
   home_short: string;
   away_short: string;
-  home_score: number;
-  away_score: number;
-  spread_result: string;
-  total_result: string;
+  pick_type: 'spread' | 'ou';
+  team_short: string | null;
+  ou_side: 'over' | 'under' | null;
+  line_or_total: number | null;
+  confidence: number | null;
+  notes: string | null;
+  result: 'WIN' | 'LOSS' | 'PUSH' | null;
 };
 
-type WeekSummary = {
-  season_year: number;
-  week_number: number;
-  user_wins: number;
-  user_losses: number;
+type GameRow = {
+  id: number;
+  home_short: string;
+  away_short: string;
+  home_score: number | null;
+  away_score: number | null;
 };
 
-export default function TrackingAdmin() {
-  const [weeks, setWeeks] = useState<TrackingWeek[]>([]);
-  const [year, setYear] = useState(2025);
-  const [week, setWeek] = useState<number | null>(null);
+/* --------------------------------------------------
+   Component
+-------------------------------------------------- */
 
-  const [myPicks, setMyPicks] = useState<UserPick[]>([]);
-  const [aiPicks, setAiPicks] = useState<AiPick[]>([]);
-  const [results, setResults] = useState<GameResult[]>([]);
-  const [summary, setSummary] = useState<WeekSummary | null>(null);
+export default function AiTrackingPage() {
+  const [year] = useState(2025);
+  const [week, setWeek] = useState<number>(14);
 
-  /* ----------------------- Load weeks ----------------------- */
+  const [games, setGames] = useState<GameRow[]>([]);
+  const [picks, setPicks] = useState<AiPick[]>([]);
 
-  const loadWeeks = useCallback(async () => {
+  const [newPick, setNewPick] = useState({
+    pick_type: 'spread' as 'spread' | 'ou',
+    game_id: 0,
+    team_short: '',
+    ou_side: '',
+    line_or_total: '',
+    confidence: '',
+    notes: '',
+  });
+
+  /* --------------------------------------------------
+     Load games for this week
+  -------------------------------------------------- */
+
+  const loadGames = useCallback(async () => {
     const { data } = await supabase
-      .from('tracking.weeks')
-      .select('*')
-      .order('week_number');
+      .from('games')
+      .select('id, home_short, away_short, home_score, away_score')
+      .eq('kickoff_year', year)
+      .eq('week_id', week);
 
-    setWeeks((data as TrackingWeek[]) || []);
-  }, []);
-
-  /* ----------------------- Load My Picks ----------------------- */
-  const loadMyPicks = useCallback(async () => {
-    if (!week) return;
-    const { data } = await supabase
-      .from('tracking.user_picks')
-      .select('*')
-      .eq('season_year', year)
-      .eq('week_number', week);
-
-    setMyPicks((data as UserPick[]) || []);
+    setGames((data as GameRow[]) || []);
   }, [week, year]);
 
-  /* ----------------------- Load AI Picks ----------------------- */
-  const loadAiPicks = useCallback(async () => {
-    if (!week) return;
+  /* --------------------------------------------------
+     Load AI picks
+  -------------------------------------------------- */
+
+  const loadPicks = useCallback(async () => {
     const { data } = await supabase
       .from('tracking.ai_recommendations')
       .select('*')
       .eq('season_year', year)
-      .eq('week_number', week);
-
-    setAiPicks((data as AiPick[]) || []);
-  }, [week, year]);
-
-  /* ----------------------- Load Results ----------------------- */
-  const loadResults = useCallback(async () => {
-    const { data } = await supabase
-      .from('tracking.game_results')
-      .select('*')
-      .order('id', { ascending: false });
-
-    setResults((data as GameResult[]) || []);
-  }, []);
-
-  /* ----------------------- Load Summary ----------------------- */
-  const loadSummary = useCallback(async () => {
-    if (!week) return;
-    const { data } = await supabase
-      .from('tracking.week_summary')
-      .select('*')
-      .eq('season_year', year)
       .eq('week_number', week)
-      .maybeSingle();
+      .order('id');
 
-    setSummary((data as WeekSummary) || null);
+    setPicks((data as AiPick[]) || []);
   }, [week, year]);
 
-  /* ----------------------- useEffects ----------------------- */
-  useEffect(() => {
-    loadWeeks();
-  }, [loadWeeks]);
+  /* --------------------------------------------------
+     Score AI Picks (auto)
+  -------------------------------------------------- */
 
-  useEffect(() => {
-    if (!week) return;
-    loadMyPicks();
-    loadAiPicks();
-    loadResults();
-    loadSummary();
-  }, [week, loadMyPicks, loadAiPicks, loadResults, loadSummary]);
+  const scorePicks = async () => {
+    const { data: allGames } = await supabase
+      .from('games')
+      .select('id, home_score, away_score, home_short, away_short')
+      .eq('kickoff_year', year)
+      .eq('week_id', week);
 
-  /* ----------------------- Actions ----------------------- */
+    const gameMap = new Map<number, GameRow>();
+    (allGames || []).forEach((g) => gameMap.set(g.id, g as GameRow));
 
-  const addWeek = async () => {
-    if (!week) return;
-    await supabase.rpc('record_week', {
-      p_year: year,
-      p_week: week,
-    });
-    loadWeeks();
+    for (const p of picks) {
+      const g = gameMap.get(p.game_id);
+      if (!g || g.home_score == null || g.away_score == null) continue;
+
+      let result: 'WIN' | 'LOSS' | 'PUSH' = 'PUSH';
+
+      const diff = g.home_score - g.away_score;
+      const total = g.home_score + g.away_score;
+
+      if (p.pick_type === 'spread' && p.team_short && p.line_or_total != null) {
+        const teamIsHome = p.team_short.toUpperCase() === g.home_short.toUpperCase();
+        const margin = teamIsHome ? diff : -diff;
+        if (margin > -p.line_or_total) result = 'WIN';
+        else if (margin < -p.line_or_total) result = 'LOSS';
+      }
+
+      if (p.pick_type === 'ou' && p.ou_side && p.line_or_total != null) {
+        if (total > p.line_or_total && p.ou_side === 'over') result = 'WIN';
+        else if (total < p.line_or_total && p.ou_side === 'under') result = 'WIN';
+        else if (total === p.line_or_total) result = 'PUSH';
+        else result = 'LOSS';
+      }
+
+      await supabase
+        .from('tracking.ai_recommendations')
+        .update({ result })
+        .eq('id', p.id);
+    }
+
+    loadPicks();
   };
 
-  const scoreWeek = async () => {
-    if (!week) return;
-    await supabase.rpc('update_user_pick_results', {
-      p_year: year,
-      p_week: week,
+  /* --------------------------------------------------
+     Add New AI Pick
+  -------------------------------------------------- */
+
+  const addNewPick = async () => {
+    if (!newPick.game_id) return;
+
+    await supabase.from('tracking.ai_recommendations').insert([
+      {
+        season_year: year,
+        week_number: week,
+        game_id: Number(newPick.game_id),
+        pick_type: newPick.pick_type,
+        team_short: newPick.pick_type === 'spread' ? newPick.team_short : null,
+        ou_side: newPick.pick_type === 'ou' ? (newPick.ou_side as 'over' | 'under') : null,
+        line_or_total: newPick.line_or_total ? Number(newPick.line_or_total) : null,
+        confidence: newPick.confidence ? Number(newPick.confidence) : null,
+        notes: newPick.notes || null,
+      },
+    ]);
+
+    loadPicks();
+
+    setNewPick({
+      pick_type: 'spread',
+      game_id: 0,
+      team_short: '',
+      ou_side: '',
+      line_or_total: '',
+      confidence: '',
+      notes: '',
     });
-    loadMyPicks();
-    loadSummary();
   };
 
-  /* ----------------------- UI ----------------------- */
+  /* --------------------------------------------------
+     Effects
+  -------------------------------------------------- */
+
+  useEffect(() => {
+    loadGames();
+    loadPicks();
+  }, [loadGames, loadPicks]);
+
+  /* --------------------------------------------------
+     Compute summary
+  -------------------------------------------------- */
+
+  const wins = picks.filter((p) => p.result === 'WIN').length;
+  const losses = picks.filter((p) => p.result === 'LOSS').length;
+  const pushes = picks.filter((p) => p.result === 'PUSH').length;
+
+  /* --------------------------------------------------
+     Render
+  -------------------------------------------------- */
 
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-6">
-      <h1 className="text-xl font-semibold">Tracking Admin Panel</h1>
+    <div className="max-w-5xl mx-auto p-6 space-y-8">
+      <h1 className="text-xl font-semibold">AI Picks Tracking – Week {week}</h1>
 
-      {/* Week Selector */}
-      <div className="p-4 border rounded bg-zinc-900/40 space-y-3">
+      {/* Week selector */}
+      <div className="flex gap-3 items-center">
+        <label className="text-sm opacity-70">Week</label>
+        <select
+          className="border bg-zinc-900 p-1 rounded"
+          value={week}
+          onChange={(e) => setWeek(Number(e.target.value))}
+        >
+          {Array.from({ length: 18 }).map((_, i) => (
+            <option key={i + 1} value={i + 1}>
+              Week {i + 1}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Summary */}
+      <section className="border rounded p-4">
+        <h2 className="text-lg font-medium mb-2">Summary</h2>
+        <p className="text-sm text-zinc-300">
+          Wins: <span className="text-emerald-400">{wins}</span> —
+          Losses: <span className="text-red-400">{losses}</span> —
+          Pushes: <span className="text-zinc-400">{pushes}</span>
+        </p>
+      </section>
+
+      {/* Add AI Pick */}
+      <section className="border rounded p-4 space-y-3">
+        <h2 className="text-lg font-medium">Add AI Pick</h2>
+
+        <div className="grid md:grid-cols-3 gap-3">
+          <div>
+            <label className="text-sm">Game</label>
+            <select
+              className="border bg-zinc-900 p-1 rounded w-full"
+              value={newPick.game_id}
+              onChange={(e) => setNewPick((p) => ({ ...p, game_id: Number(e.target.value) }))}
+            >
+              <option value={0}>Select game…</option>
+              {games.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.home_short} vs {g.away_short}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-sm">Pick Type</label>
+            <select
+              className="border bg-zinc-900 p-1 rounded w-full"
+              value={newPick.pick_type}
+              onChange={(e) =>
+                setNewPick({ ...newPick, pick_type: e.target.value as 'spread' | 'ou' })
+              }
+            >
+              <option value="spread">Spread</option>
+              <option value="ou">O/U</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="text-sm">Line / Total</label>
+            <input
+              className="border bg-zinc-900 p-1 rounded w-full"
+              value={newPick.line_or_total}
+              onChange={(e) => setNewPick({ ...newPick, line_or_total: e.target.value })}
+            />
+          </div>
+        </div>
+
+        {/* Spread fields */}
+        {newPick.pick_type === 'spread' && (
+          <div>
+            <label className="text-sm">Team</label>
+            <input
+              className="border bg-zinc-900 p-1 rounded w-full"
+              value={newPick.team_short}
+              onChange={(e) => setNewPick({ ...newPick, team_short: e.target.value.toUpperCase() })}
+            />
+          </div>
+        )}
+
+        {/* O/U fields */}
+        {newPick.pick_type === 'ou' && (
+          <div>
+            <label className="text-sm">Side</label>
+            <select
+              className="border bg-zinc-900 p-1 rounded w-full"
+              value={newPick.ou_side}
+              onChange={(e) => setNewPick({ ...newPick, ou_side: e.target.value })}
+            >
+              <option value="">Select…</option>
+              <option value="over">OVER</option>
+              <option value="under">UNDER</option>
+            </select>
+          </div>
+        )}
+
         <div>
-          <label className="block text-sm text-zinc-400">Season Year</label>
+          <label className="text-sm">Confidence (0–100)</label>
           <input
             type="number"
-            className="bg-zinc-800 border px-2 py-1 rounded"
-            value={year}
-            onChange={(e) => setYear(Number(e.target.value))}
+            className="border bg-zinc-900 p-1 rounded w-full"
+            value={newPick.confidence}
+            onChange={(e) => setNewPick({ ...newPick, confidence: e.target.value })}
           />
         </div>
 
-        <div>
-          <label className="block text-sm text-zinc-400">Select Week</label>
-          <select
-            className="bg-zinc-800 border px-2 py-1 rounded"
-            value={week ?? ''}
-            onChange={(e) => setWeek(Number(e.target.value))}
-          >
-            <option value="">— Select Week —</option>
-            {weeks.map((w) => (
-              <option key={w.week_number} value={w.week_number}>
-                Week {w.week_number}
-              </option>
-            ))}
-          </select>
-        </div>
-
         <button
-          onClick={addWeek}
-          disabled={!week}
+          onClick={addNewPick}
           className="px-3 py-1 border rounded bg-zinc-800 hover:bg-zinc-700"
         >
-          Add/Update Week
+          Add Pick
         </button>
-      </div>
+      </section>
 
-      {/* My Picks */}
+      {/* Pick List */}
       <section className="border rounded p-4">
-        <h2 className="text-lg font-medium mb-2">My Picks</h2>
-        {myPicks.length === 0 ? (
-          <div className="text-zinc-500 text-sm">No picks yet.</div>
+        <h2 className="text-lg font-medium mb-3">AI Picks</h2>
+        {picks.length === 0 ? (
+          <p className="text-zinc-400 text-sm">No picks this week.</p>
         ) : (
           <ul className="divide-y divide-zinc-800">
-            {myPicks.map((p) => (
+            {picks.map((p) => (
               <li key={p.id} className="py-2 text-sm">
-                <strong>{p.pick_type.toUpperCase()}</strong> — {p.team_short}{' '}
-                {p.pick_value}{' '}
+                <strong>{p.pick_type.toUpperCase()}</strong> —{' '}
+                {p.pick_type === 'spread'
+                  ? `${p.team_short} ${p.line_or_total}`
+                  : `${p.ou_side?.toUpperCase()} ${p.line_or_total}`}{' '}
+                ({p.home_short} vs {p.away_short}){' '}
                 {p.result ? (
-                  <span className="text-emerald-400">({p.result})</span>
+                  <span
+                    className={
+                      p.result === 'WIN'
+                        ? 'text-emerald-400'
+                        : p.result === 'LOSS'
+                        ? 'text-red-400'
+                        : 'text-zinc-400'
+                    }
+                  >
+                    — {p.result}
+                  </span>
                 ) : null}
               </li>
             ))}
           </ul>
         )}
-      </section>
-
-      {/* AI Picks */}
-      <section className="border rounded p-4">
-        <h2 className="text-lg font-medium mb-2">AI Recommendations</h2>
-        {aiPicks.length === 0 ? (
-          <div className="text-zinc-500 text-sm">No AI picks logged.</div>
-        ) : (
-          <ul className="divide-y divide-zinc-800">
-            {aiPicks.map((p) => (
-              <li key={p.id} className="py-2 text-sm">
-                <strong>{p.pick_type.toUpperCase()}</strong> —{' '}
-                {p.recommendation}{' '}
-                ({p.home_short} vs {p.away_short})
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {/* Game Results */}
-      <section className="border rounded p-4">
-        <h2 className="text-lg font-medium mb-2">Game Results</h2>
-        {results.length === 0 ? (
-          <div className="text-zinc-500 text-sm">No results recorded.</div>
-        ) : (
-          <ul className="divide-y divide-zinc-800">
-            {results.map((r) => (
-              <li key={r.id} className="py-2 text-sm">
-                {r.home_short} {r.home_score} — {r.away_score} {r.away_short}
-                <span className="ml-2 text-zinc-400">
-                  Spread: {r.spread_result}, Total: {r.total_result}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {/* Summary */}
-      <section className="border rounded p-4">
-        <h2 className="text-lg font-medium mb-2">Week Summary</h2>
-        {!summary ? (
-          <div className="text-zinc-500 text-sm">No summary available.</div>
-        ) : (
-          <div className="text-sm">
-            Wins:{' '}
-            <span className="text-emerald-400">{summary.user_wins}</span> — Losses:{' '}
-            <span className="text-red-400">{summary.user_losses}</span>
-          </div>
-        )}
 
         <button
-          onClick={scoreWeek}
-          disabled={!week}
+          onClick={scorePicks}
           className="mt-3 px-3 py-1 border rounded bg-zinc-800 hover:bg-zinc-700"
         >
           Score Week
