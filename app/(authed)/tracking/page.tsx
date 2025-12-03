@@ -74,7 +74,7 @@ export default function AiTrackingPage() {
   });
 
   /* --------------------------------------------------
-     LOAD GAMES (via RPC get_week_draft_board)
+     LOAD GAMES VIA RPC
   -------------------------------------------------- */
 
   const loadGames = useCallback(async () => {
@@ -89,29 +89,22 @@ export default function AiTrackingPage() {
       return;
     }
 
-    const mapped = (data ?? []).map((r: unknown) => {
-      const o = r as {
-        game_id: number;
-        home_short: string;
-        away_short: string;
-      };
-      return {
-        game_id: Number(o.game_id),
-        home_short: o.home_short,
-        away_short: o.away_short,
-      };
-    });
+    const mapped = (data ?? []).map((r: any) => ({
+      game_id: Number(r.game_id),
+      home_short: r.home_short,
+      away_short: r.away_short,
+    }));
 
     setGames(mapped);
   }, [year, week]);
 
   /* --------------------------------------------------
-     LOAD AI PICKS
+     LOAD PICKS — FIXED TO USE PUBLIC.ai_recommendations
   -------------------------------------------------- */
 
   const loadPicks = useCallback(async () => {
     const { data, error } = await supabase
-      .from('tracking.ai_recommendations')
+      .from('ai_recommendations') // FIXED
       .select(
         `
         *,
@@ -131,34 +124,17 @@ export default function AiTrackingPage() {
       return;
     }
 
-    const mapped = (data ?? []).map((row: unknown) => {
-      const r = row as {
-        id: number;
-        season_year: number;
-        week_number: number;
-        game_id: number | null;
-        pick_type: 'spread' | 'ou';
-        team_short: string | null;
-        ou_side: 'over' | 'under' | null;
-        line_or_total: number | null;
-        confidence: number | null;
-        notes: string | null;
-        result: AiResult;
-        game: { home_short: string; away_short: string } | null;
-      };
-
-      return {
-        ...r,
-        home_short: r.game?.home_short ?? null,
-        away_short: r.game?.away_short ?? null,
-      };
-    });
+    const mapped = (data ?? []).map((row: any) => ({
+      ...row,
+      home_short: row.game?.home_short ?? null,
+      away_short: row.game?.away_short ?? null,
+    }));
 
     setPicks(mapped);
   }, [year, week]);
 
   /* --------------------------------------------------
-     ADD NEW PICK
+     ADD NEW PICK — FIXED TO USE PUBLIC.ai_recommendations
   -------------------------------------------------- */
 
   const addNewPick = async () => {
@@ -187,7 +163,7 @@ export default function AiTrackingPage() {
     };
 
     const { error } = await supabase
-      .from('tracking.ai_recommendations')
+      .from('ai_recommendations') // FIXED
       .insert([payload]);
 
     if (error) console.error('Add pick error:', error);
@@ -230,7 +206,6 @@ export default function AiTrackingPage() {
         AI Picks Tracking – Week {week}
       </h1>
 
-      {/* Week Selector */}
       <div className="flex gap-3 items-center">
         <label className="text-sm opacity-70">Week</label>
         <select
@@ -381,7 +356,7 @@ export default function AiTrackingPage() {
         </button>
       </section>
 
-      {/* List of Picks */}
+      {/* AI Picks */}
       <section className="border rounded p-4">
         <h2 className="text-lg font-medium mb-3">AI Picks</h2>
 
