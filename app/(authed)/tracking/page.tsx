@@ -3,37 +3,38 @@
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 
-/* ------------------------------------------------------------
-   TYPES
------------------------------------------------------------- */
+/* --------------------------------------------------
+   Types
+-------------------------------------------------- */
 
 type AiResult = 'WIN' | 'LOSS' | 'PUSH' | null;
 
-interface AiPick {
+type AiPick = {
   id: number;
   season_year: number;
   week_number: number;
   game_id: number | null;
   home_short: string | null;
   away_short: string | null;
-  pick_type: 'spread' | 'ou' | null;
-  recommendation: string | null;   // team_short for spread, OVER/UNDER for O/U
+  pick_type: 'spread' | 'ou';
+  team_short: string | null;
+  ou_side: 'over' | 'under' | null;
+  line_or_total: number | null;
   confidence: number | null;
   notes: string | null;
-  line_or_total: number | null;
-  ou_side: string | null;
   result: AiResult;
-}
+};
 
-interface BoardGame {
+type BoardGame = {
   game_id: number;
   home_short: string;
   away_short: string;
-}
+};
 
-/* ------------------------------------------------------------
-   SUMMARY WORKER
------------------------------------------------------------- */
+/* --------------------------------------------------
+   Utility
+-------------------------------------------------- */
+
 function computeRecord(picks: AiPick[]) {
   let wins = 0;
   let losses = 0;
@@ -51,9 +52,9 @@ function computeRecord(picks: AiPick[]) {
   return { wins, losses, pushes, total, winRate };
 }
 
-/* ------------------------------------------------------------
-   COMPONENT
------------------------------------------------------------- */
+/* --------------------------------------------------
+   Page Component
+-------------------------------------------------- */
 
 export default function AiTrackingPage() {
   const [year] = useState(2025);
@@ -65,15 +66,16 @@ export default function AiTrackingPage() {
   const [newPick, setNewPick] = useState({
     pick_type: 'spread' as 'spread' | 'ou',
     game_id: 0,
-    recommendation: '',
+    team_short: '',
+    ou_side: '',
     line_or_total: '',
     confidence: '',
     notes: '',
   });
 
-  /* ------------------------------------------------------------
-     LOAD GAMES (RPC)
-  ------------------------------------------------------------ */
+  /* --------------------------------------------------
+     LOAD GAMES (via RPC get_week_draft_board)
+  -------------------------------------------------- */
 
   const loadGames = useCallback(async () => {
     const { data, error } = await supabase.rpc('get_week_draft_board', {
@@ -82,44 +84,82 @@ export default function AiTrackingPage() {
     });
 
     if (error) {
-      console.error('RPC get_week_draft_board error', error);
+      console.error('loadGames RPC error:', error);
       setGames([]);
       return;
     }
 
-    const mapped = (data ?? []).map((row: any) => ({
-      game_id: row.game_id,
-      home_short: row.home_short,
-      away_short: row.away_short,
-    }));
+    const mapped = (data ?? []).map((r: unknown) => {
+      const o = r as {
+        game_id: number;
+        home_short: string;
+        away_short: string;
+      };
+      return {
+        game_id: Number(o.game_id),
+        home_short: o.home_short,
+        away_short: o.away_short,
+      };
+    });
 
     setGames(mapped);
   }, [year, week]);
 
-  /* ------------------------------------------------------------
-     LOAD PICKS FOR THIS WEEK
-  ------------------------------------------------------------ */
+  /* --------------------------------------------------
+     LOAD AI PICKS
+  -------------------------------------------------- */
 
   const loadPicks = useCallback(async () => {
     const { data, error } = await supabase
-      .from('ai_recommendations')
-      .select('*')
+      .from('tracking.ai_recommendations')
+      .select(
+        `
+        *,
+        game:game_id (
+          home_short,
+          away_short
+        )
+      `
+      )
       .eq('season_year', year)
       .eq('week_number', week)
       .order('id');
 
     if (error) {
-      console.error('loadPicks error', error);
+      console.error('loadPicks error:', error);
       setPicks([]);
       return;
     }
 
-    setPicks((data as AiPick[]) ?? []);
+    const mapped = (data ?? []).map((row: unknown) => {
+      const r = row as {
+        id: number;
+        season_year: number;
+        week_number: number;
+        game_id: number | null;
+        pick_type: 'spread' | 'ou';
+        team_short: string | null;
+        ou_side: 'over' | 'under' | null;
+        line_or_total: number | null;
+        confidence: number | null;
+        notes: string | null;
+        result: AiResult;
+        game: { home_short: string; away_short: string } | null;
+      };
+
+      return {
+        ...r,
+        home_short: r.game?.home_short ?? null,
+        away_short: r.game?.away_short ?? null,
+      };
+    });
+
+    setPicks(mapped);
   }, [year, week]);
 
-  /* ------------------------------------------------------------
+  /* --------------------------------------------------
      ADD NEW PICK
-  ------------------------------------------------------------ */
+  -------------------------------------------------- */
 
   const addNewPick = async () => {
     if (!newPick.game_id) return;
@@ -129,7 +169,14 @@ export default function AiTrackingPage() {
       week_number: week,
       game_id: newPick.game_id,
       pick_type: newPick.pick_type,
-      recommendation: newPick.recommendation.toUpperCase(),
+      team_short:
+        newPick.pick_type === 'spread'
+          ? newPick.team_short.toUpperCase()
+          : null,
+      ou_side:
+        newPick.pick_type === 'ou' && newPick.ou_side
+          ? (newPick.ou_side as 'over' | 'under')
+          : null,
       line_or_total: newPick.line_or_total
         ? Number(newPick.line_or_total)
         : null,
@@ -140,47 +187,51 @@ export default function AiTrackingPage() {
     };
 
     const { error } = await supabase
-      .from('ai_recommendations')
+      .from('tracking.ai_recommendations')
       .insert([payload]);
 
-    if (error) console.error('Insert error', error);
+    if (error) console.error('Add pick error:', error);
 
     await loadPicks();
 
     setNewPick({
       pick_type: 'spread',
       game_id: 0,
-      recommendation: '',
+      team_short: '',
+      ou_side: '',
       line_or_total: '',
       confidence: '',
       notes: '',
     });
   };
 
-  /* ------------------------------------------------------------
-     EFFECT: LOAD GAMES + PICKS WHEN WEEK CHANGES
-  ------------------------------------------------------------ */
+  /* --------------------------------------------------
+     EFFECTS
+  -------------------------------------------------- */
+
   useEffect(() => {
     loadGames();
     loadPicks();
   }, [loadGames, loadPicks]);
 
-  /* ------------------------------------------------------------
+  /* --------------------------------------------------
      SUMMARY
-  ------------------------------------------------------------ */
+  -------------------------------------------------- */
+
   const overall = computeRecord(picks);
 
-  /* ------------------------------------------------------------
+  /* --------------------------------------------------
      RENDER
-  ------------------------------------------------------------ */
+  -------------------------------------------------- */
+
   return (
-    <div className="max-w-4xl mx-auto p-6 space-y-8">
+    <div className="max-w-5xl mx-auto p-6 space-y-8">
       <h1 className="text-xl font-semibold">
-        AI Picks Tracking — Week {week}
+        AI Picks Tracking – Week {week}
       </h1>
 
       {/* Week Selector */}
-      <div className="flex gap-2 items-center">
+      <div className="flex gap-3 items-center">
         <label className="text-sm opacity-70">Week</label>
         <select
           className="border bg-zinc-900 p-1 rounded"
@@ -195,9 +246,9 @@ export default function AiTrackingPage() {
         </select>
       </div>
 
-      {/* ADD PICK */}
+      {/* Add Pick */}
       <section className="border rounded p-4 space-y-3">
-        <h2 className="font-medium text-lg">Add AI Pick</h2>
+        <h2 className="text-lg font-medium">Add AI Pick</h2>
 
         <div className="grid md:grid-cols-3 gap-3">
           <div>
@@ -230,6 +281,8 @@ export default function AiTrackingPage() {
                 setNewPick((p) => ({
                   ...p,
                   pick_type: e.target.value as 'spread' | 'ou',
+                  team_short: '',
+                  ou_side: '',
                 }))
               }
             >
@@ -253,25 +306,45 @@ export default function AiTrackingPage() {
           </div>
         </div>
 
-        <div>
-          <label className="text-sm">
-            Recommendation {newPick.pick_type === 'spread' ? '(team)' : '(OVER/UNDER)'}
-          </label>
-          <input
-            className="border bg-zinc-900 p-1 rounded w-full"
-            value={newPick.recommendation}
-            onChange={(e) =>
-              setNewPick((p) => ({
-                ...p,
-                recommendation: e.target.value.toUpperCase(),
-              }))
-            }
-          />
-        </div>
+        {newPick.pick_type === 'spread' && (
+          <div>
+            <label className="text-sm">Team (short code)</label>
+            <input
+              className="border bg-zinc-900 p-1 rounded w-full"
+              value={newPick.team_short}
+              onChange={(e) =>
+                setNewPick((p) => ({
+                  ...p,
+                  team_short: e.target.value.toUpperCase(),
+                }))
+              }
+            />
+          </div>
+        )}
+
+        {newPick.pick_type === 'ou' && (
+          <div>
+            <label className="text-sm">Side</label>
+            <select
+              className="border bg-zinc-900 p-1 rounded w-full"
+              value={newPick.ou_side}
+              onChange={(e) =>
+                setNewPick((p) => ({
+                  ...p,
+                  ou_side: e.target.value,
+                }))
+              }
+            >
+              <option value="">Select…</option>
+              <option value="over">OVER</option>
+              <option value="under">UNDER</option>
+            </select>
+          </div>
+        )}
 
         <div className="grid md:grid-cols-2 gap-3">
           <div>
-            <label className="text-sm">Confidence %</label>
+            <label className="text-sm">Confidence (0–100)</label>
             <input
               type="number"
               className="border bg-zinc-900 p-1 rounded w-full"
@@ -308,24 +381,52 @@ export default function AiTrackingPage() {
         </button>
       </section>
 
-      {/* AI PICK LIST */}
+      {/* List of Picks */}
       <section className="border rounded p-4">
-        <h2 className="font-medium text-lg mb-3">AI Picks</h2>
+        <h2 className="text-lg font-medium mb-3">AI Picks</h2>
 
         {picks.length === 0 ? (
-          <p className="text-sm opacity-60">No picks yet.</p>
+          <p className="text-zinc-400 text-sm">No picks this week.</p>
         ) : (
           <ul className="divide-y divide-zinc-800">
             {picks.map((p) => (
               <li key={p.id} className="py-2 text-sm">
-                <strong>{p.pick_type?.toUpperCase()}</strong> —{' '}
-                {p.recommendation}{' '}
-                {p.line_or_total !== null ? p.line_or_total : ''}{' '}
+                <strong>{p.pick_type.toUpperCase()}</strong> —{' '}
+                {p.pick_type === 'spread'
+                  ? `${p.team_short} ${p.line_or_total}`
+                  : `${p.ou_side?.toUpperCase()} ${p.line_or_total}`}{' '}
                 ({p.home_short} vs {p.away_short})
               </li>
             ))}
           </ul>
         )}
+      </section>
+
+      {/* Summary */}
+      <section className="border rounded p-4">
+        <h2 className="text-lg font-medium mb-3">Summary (This Week)</h2>
+
+        <p className="text-sm text-zinc-300">
+          Picks: {overall.total} — Wins:{' '}
+          <span className="text-emerald-400 font-semibold">
+            {overall.wins}
+          </span>{' '}
+          Losses:{' '}
+          <span className="text-red-400 font-semibold">
+            {overall.losses}
+          </span>{' '}
+          Pushes:{' '}
+          <span className="text-zinc-400 font-semibold">
+            {overall.pushes}
+          </span>
+        </p>
+
+        <p className="text-sm text-zinc-300 mt-1">
+          Hit rate:{' '}
+          <span className="font-semibold">
+            {overall.total > 0 ? `${overall.winRate.toFixed(1)}%` : '—'}
+          </span>
+        </p>
       </section>
     </div>
   );
