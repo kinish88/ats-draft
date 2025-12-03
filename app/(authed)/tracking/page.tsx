@@ -108,21 +108,34 @@ export default function AiTrackingPage() {
      Load AI picks
   -------------------------------------------------- */
   const loadPicks = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('tracking.ai_recommendations')
-      .select('*')
-      .eq('season_year', year)
-      .eq('week_number', week)
-      .order('id');
+  const { data, error } = await supabase
+    .from('tracking.ai_recommendations')
+    .select(`
+      *,
+      game:game_id (
+        home_short,
+        away_short
+      )
+    `)
+    .eq('season_year', year)
+    .eq('week_number', week)
+    .order('id');
 
-    if (error) {
-      console.error('loadPicks error', error);
-      setPicks([]);
-      return;
-    }
+  if (error) {
+    console.error('loadPicks error', error);
+    setPicks([]);
+    return;
+  }
 
-    setPicks((data as AiPick[]) || []);
-  }, [year, week]);
+  const mapped = (data ?? []).map((row: any) => ({
+    ...row,
+    home_short: row.game?.home_short ?? null,
+    away_short: row.game?.away_short ?? null,
+  }));
+
+  setPicks(mapped);
+}, [year, week]);
+
 
   /* --------------------------------------------------
      Add new AI Pick
