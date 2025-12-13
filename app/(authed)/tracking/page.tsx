@@ -124,31 +124,68 @@ export default function TrackingPage() {
         .from('ai_recommendations')
         .select('*')
         .eq('season_year', YEAR)
-        .eq('week_number', week)
+        .or(`week_number.eq.${week},week_id.eq.${week}`)
         .order('id');
       if (error) {
         console.error('Could not load AI picks', error);
         return;
       }
-      const mapped: AiPick[] = (data ?? []).map((row) => ({
-        id: Number(row.id ?? 0),
-        season_year: Number(row.season_year ?? YEAR),
-        week_number: Number(row.week_number ?? week),
-        game_id: Number(row.game_id ?? 0),
-        pick_type: row.pick_type === 'ou' ? 'ou' : 'spread',
-        home_short: typeof row.home_short === 'string' ? row.home_short : null,
-        away_short: typeof row.away_short === 'string' ? row.away_short : null,
-        team_short: typeof row.team_short === 'string' ? row.team_short : null,
-        ou_side: typeof row.ou_side === 'string' ? row.ou_side : null,
-        line_or_total:
+      const mapped: AiPick[] = (data ?? []).map((row) => {
+        const pickTypeRaw =
+          typeof row.pick_type === 'string' ? row.pick_type.toLowerCase() : '';
+        const pickType: 'spread' | 'ou' =
+          pickTypeRaw === 'ou' || pickTypeRaw.includes('total') ? 'ou' : 'spread';
+        const line =
           typeof row.line_or_total === 'number'
             ? row.line_or_total
             : row.line_or_total == null
             ? null
-            : Number(row.line_or_total),
-        recommendation:
-          typeof row.recommendation === 'string' ? row.recommendation : null,
-      }));
+            : Number(row.line_or_total);
+        const pickValue =
+          typeof row.pick_value === 'number'
+            ? row.pick_value
+            : row.pick_value == null
+            ? null
+            : Number(row.pick_value);
+        const recommendation =
+          typeof row.recommendation === 'string'
+            ? row.recommendation
+            : typeof row.team_short === 'string'
+            ? row.team_short
+            : typeof row.ou_side === 'string'
+            ? row.ou_side
+            : typeof row.pick_value === 'string'
+            ? row.pick_value
+            : null;
+        return {
+          id: typeof row.id === 'number' ? row.id : Number(row.id ?? 0),
+          season_year:
+            typeof row.season_year === 'number'
+              ? row.season_year
+              : Number(row.season_year ?? YEAR),
+          week_number:
+            typeof row.week_number === 'number'
+              ? row.week_number
+              : row.week_number == null
+              ? typeof row.week_id === 'number'
+                ? row.week_id
+                : Number(row.week_id ?? week)
+              : Number(row.week_number),
+          game_id: typeof row.game_id === 'number' ? row.game_id : Number(row.game_id ?? 0),
+          pick_type: pickType,
+          home_short: typeof row.home_short === 'string' ? row.home_short : null,
+          away_short: typeof row.away_short === 'string' ? row.away_short : null,
+          team_short: typeof row.team_short === 'string' ? row.team_short : null,
+          ou_side:
+            typeof row.ou_side === 'string'
+              ? row.ou_side
+              : pickType === 'ou'
+              ? recommendation
+              : null,
+          line_or_total: line ?? pickValue,
+          recommendation,
+        };
+      });
       setPicks(mapped);
     })();
   }, [week, isAdmin]);
