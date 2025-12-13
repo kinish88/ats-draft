@@ -1,162 +1,193 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
-
-/* --------------------------------------------------
-   Types
--------------------------------------------------- */
 
 type AiPick = {
   id: number;
   season_year: number;
   week_number: number;
   game_id: number;
+  pick_type: 'spread' | 'ou';
   home_short: string | null;
   away_short: string | null;
-  pick_type: 'spread' | 'ou';
-  recommendation: string | null; // raw from DB
-  team_short: string | null;     // used for display
+  team_short: string | null;
   ou_side: string | null;
   line_or_total: number | null;
-  confidence: number | null;
-  notes: string | null;
 };
 
-/* --------------------------------------------------
-   Helper: compute W/L/P
--------------------------------------------------- */
-function computeRecord(picks: AiPick[]) {
-  return { wins: 0, losses: 0, pushes: 0, total: picks.length };
+type GameRow = {
+  id: number;
+  home: string;
+  away: string;
+  home_score: number | null;
+  away_score: number | null;
+  live_home_score: number | null;
+  live_away_score: number | null;
+  is_final: boolean | null;
+  is_live: boolean | null;
+};
+
+type Outcome = 'W' | 'L' | 'P' | '—';
+
+const YEAR = 2025;
+
+function toShort(value?: string | null) {
+  return (value ?? '').trim().toUpperCase();
 }
 
-/* --------------------------------------------------
-   Page
--------------------------------------------------- */
-export default function AiTrackingPage() {
-  const [year] = useState(2025);
-  const [week, setWeek] = useState<number>(14);
+function scoreSnapshot(game?: GameRow | null) {
+  if (!game) return { home: null, away: null, text: '—' };
+  const hasFinal = game.home_score != null && game.away_score != null;
+  const hasLive = game.live_home_score != null && game.live_away_score != null;
+  const home = hasFinal ? game.home_score : hasLive ? game.live_home_score : null;
+  const away = hasFinal ? game.away_score : hasLive ? game.live_away_score : null;
+  if (home == null || away == null) return { home, away, text: '—' };
+  return { home, away, text: `${home}–${away}` };
+}
 
-  const [games, setGames] = useState<
-    { game_id: number; home_short: string; away_short: string }[]
-  >([]);
+function computeOutcome(pick: AiPick, game?: GameRow | null): Outcome {
+  const score = scoreSnapshot(game);
+  if (score.home == null || score.away == null || pick.line_or_total == null) return '—';
+
+  if (pick.pick_type === 'spread') {
+    const team = toShort(pick.team_short);
+    const home = toShort(pick.home_short ?? game?.home);
+    const away = toShort(pick.away_short ?? game?.away);
+    const isHome = team && team === home;
+    const isAway = team && team === away;
+    if (!isHome && !isAway) return '—';
+    const pickScore = isHome ? score.home : score.away;
+    const oppScore = isHome ? score.away : score.home;
+    const adj = (pickScore ?? 0) + pick.line_or_total;
+    if (adj > (oppScore ?? 0)) return 'W';
+    if (adj < (oppScore ?? 0)) return 'L';
+    return 'P';
+  }
+
+  const side = toShort(pick.ou_side);
+  const total = (score.home ?? 0) + (score.away ?? 0);
+  if (total === pick.line_or_total) return 'P';
+  if (side === 'OVER') return total > pick.line_or_total ? 'W' : 'L';
+  if (side === 'UNDER') return total < pick.line_or_total ? 'W' : 'L';
+  return '—';
+}
+
+export default function TrackingPage() {
+  const router = useRouter();
+  const [week, setWeek] = useState<number>(1);
+  const [checkingAdmin, setCheckingAdmin] = useState(true);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const [picks, setPicks] = useState<AiPick[]>([]);
+  const [games, setGames] = useState<Map<number, GameRow>>(new Map());
 
-  const [newPick, setNewPick] = useState({
-    pick_type: 'spread' as 'spread' | 'ou',
-    game_id: 0,
-    team_short: '',
-    ou_side: '',
-    line_or_total: '',
-    confidence: '',
-    notes: '',
-  });
-
-  /* --------------------------------------------------
-     Load Games
-  -------------------------------------------------- */
-  const loadGames = useCallback(async () => {
-    const { data, error } = await supabase.rpc('get_week_draft_board', {
-      p_year: year,
-      p_week: week,
-    });
-
-    if (error) {
-      console.error(error);
-      return;
-    }
-
-    setGames(
-      (data ?? []).map((g: any) => ({
-        game_id: g.game_id,
-        home_short: g.home_short,
-        away_short: g.away_short,
-      }))
-    );
-  }, [year, week]);
-
-  /* --------------------------------------------------
-     Load Picks (CORRECT TABLE!)
-  -------------------------------------------------- */
-  const loadPicks = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('ai_recommendations') // ← FIXED
-      .select('*')
-      .eq('season_year', year)
-      .eq('week_number', week)
-      .order('id', { ascending: true });
-
-    if (error) {
-      console.error(error);
-      return;
-    }
-
-    const mapped = (data ?? []).map((row: any) => ({
-      ...row,
-      team_short: row.team_short ?? row.recommendation ?? null,
-    }));
-
-    setPicks(mapped);
-  }, [year, week]);
-
-  /* --------------------------------------------------
-     Add Pick
-  -------------------------------------------------- */
-  const addNewPick = async () => {
-    if (!newPick.game_id) return;
-
-    const payload = {
-      season_year: year,
-      week_number: week,
-      game_id: newPick.game_id,
-      pick_type: newPick.pick_type,
-      recommendation:
-        newPick.pick_type === 'spread'
-          ? newPick.team_short.toUpperCase()
-          : newPick.ou_side.toUpperCase(),
-      team_short:
-        newPick.pick_type === 'spread'
-          ? newPick.team_short.toUpperCase()
-          : null,
-      ou_side: newPick.pick_type === 'ou' ? newPick.ou_side : null,
-      line_or_total: Number(newPick.line_or_total),
-      confidence: Number(newPick.confidence),
-      notes: newPick.notes || null,
-    };
-
-    await supabase.from('ai_recommendations').insert([payload]);
-    await loadPicks();
-
-    setNewPick({
-      pick_type: 'spread',
-      game_id: 0,
-      team_short: '',
-      ou_side: '',
-      line_or_total: '',
-      confidence: '',
-      notes: '',
-    });
-  };
-
-  /* --------------------------------------------------
-     Effects
-  -------------------------------------------------- */
+  // Admin guard
   useEffect(() => {
-    loadGames();
-    loadPicks();
-  }, [loadGames, loadPicks]);
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      const email = session?.user.email?.toLowerCase() ?? null;
+      if (!email) {
+        router.replace('/login');
+        return;
+      }
+      let ok = email === 'me@chrismcarthur.co.uk';
+      if (!ok) {
+        const { data } = await supabase
+          .from('players')
+          .select('display_name')
+          .eq('email', email)
+          .maybeSingle();
+        ok = data?.display_name === 'Kinish';
+      }
+      setIsAdmin(ok);
+      setCheckingAdmin(false);
+      if (!ok) router.replace('/');
+    })();
+  }, [router]);
 
-  const summary = computeRecord(picks);
+  // bootstrap week from current_open_week once
+  useEffect(() => {
+    (async () => {
+      const { data } = await supabase.from('current_open_week').select('week_id').maybeSingle();
+      if (data?.week_id) setWeek(Number(data.week_id));
+    })();
+  }, []);
 
-  /* --------------------------------------------------
-     Render
-  -------------------------------------------------- */
+  // load Dave1290 picks for the week
+  useEffect(() => {
+    if (!isAdmin) return;
+    (async () => {
+      const { data, error } = await supabase
+        .from('ai_recommendations')
+        .select(
+          'id,season_year,week_number,game_id,pick_type,home_short,away_short,team_short,ou_side,line_or_total'
+        )
+        .eq('season_year', YEAR)
+        .eq('week_number', week)
+        .order('id');
+      if (!error) setPicks((data ?? []) as AiPick[]);
+    })();
+  }, [week, isAdmin]);
+
+  // load matching games for outcome calculation
+  useEffect(() => {
+    if (!isAdmin || !picks.length) {
+      setGames(new Map());
+      return;
+    }
+    const ids = Array.from(new Set(picks.map((p) => p.game_id))).filter((n) =>
+      Number.isFinite(n)
+    );
+    if (!ids.length) {
+      setGames(new Map());
+      return;
+    }
+    (async () => {
+      const { data, error } = await supabase
+        .from('games')
+        .select(
+          'id,home,away,home_score,away_score,live_home_score,live_away_score,is_final,is_live'
+        )
+        .in('id', ids);
+      if (error) return;
+      const map = new Map<number, GameRow>();
+      for (const row of data ?? []) {
+        const rec = row as GameRow;
+        map.set(rec.id, rec);
+      }
+      setGames(map);
+    })();
+  }, [picks, isAdmin]);
+
+  const decorated = useMemo(() => {
+    return picks.map((p) => {
+      const game = games.get(p.game_id) ?? null;
+      const score = scoreSnapshot(game);
+      return {
+        ...p,
+        matchup: `${toShort(p.home_short ?? game?.home)} vs ${toShort(p.away_short ?? game?.away)}`,
+        score: score.text,
+        outcome: computeOutcome(p, game),
+      };
+    });
+  }, [picks, games]);
+
+  if (checkingAdmin) {
+    return <div className="p-6 text-sm text-zinc-400">Checking admin access…</div>;
+  }
+  if (!isAdmin) return null;
+
   return (
-    <div className="max-w-5xl mx-auto p-6 space-y-8">
-      <h1 className="text-xl font-semibold">
-        AI Picks Tracking – Week {week}
-      </h1>
+    <div className="max-w-4xl mx-auto p-6 space-y-6">
+      <header className="space-y-1">
+        <h1 className="text-xl font-semibold">Dave1290 AI Tracking</h1>
+        <p className="text-sm text-zinc-400">
+          Read-only log of Dave’s weekly recommendations. This page never influences the live draft
+          or scoring.
+        </p>
+      </header>
 
       <div className="flex gap-3 items-center">
         <label className="text-sm opacity-70">Week</label>
@@ -165,160 +196,42 @@ export default function AiTrackingPage() {
           value={week}
           onChange={(e) => setWeek(Number(e.target.value))}
         >
-          {Array.from({ length: 18 }).map((_, i) => (
-            <option key={i + 1} value={i + 1}>
-              Week {i + 1}
+          {Array.from({ length: 18 }).map((_, idx) => (
+            <option key={idx + 1} value={idx + 1}>
+              Week {idx + 1}
             </option>
           ))}
         </select>
       </div>
 
-      {/* Add Pick */}
       <section className="border rounded p-4 space-y-3">
-        <h2 className="text-lg font-medium">Add AI Pick</h2>
-
-        <div className="grid md:grid-cols-3 gap-3">
-          <div>
-            <label className="text-sm">Game</label>
-            <select
-              className="border bg-zinc-900 p-1 rounded w-full"
-              value={newPick.game_id}
-              onChange={(e) =>
-                setNewPick({ ...newPick, game_id: Number(e.target.value) })
-              }
-            >
-              <option value={0}>Select game…</option>
-              {games.map((g) => (
-                <option key={g.game_id} value={g.game_id}>
-                  {g.home_short} vs {g.away_short}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="text-sm">Pick Type</label>
-            <select
-              className="border bg-zinc-900 p-1 rounded w-full"
-              value={newPick.pick_type}
-              onChange={(e) =>
-                setNewPick({
-                  ...newPick,
-                  pick_type: e.target.value as 'spread' | 'ou',
-                })
-              }
-            >
-              <option value="spread">Spread</option>
-              <option value="ou">O/U</option>
-            </select>
-          </div>
-
-          <div>
-            <label className="text-sm">Line / Total</label>
-            <input
-              className="border bg-zinc-900 p-1 rounded w-full"
-              value={newPick.line_or_total}
-              onChange={(e) =>
-                setNewPick({ ...newPick, line_or_total: e.target.value })
-              }
-            />
-          </div>
-        </div>
-
-        {newPick.pick_type === 'spread' && (
-          <div>
-            <label className="text-sm">Team (short code)</label>
-            <input
-              className="border bg-zinc-900 p-1 rounded w-full"
-              value={newPick.team_short}
-              onChange={(e) =>
-                setNewPick({
-                  ...newPick,
-                  team_short: e.target.value.toUpperCase(),
-                })
-              }
-            />
-          </div>
-        )}
-
-        {newPick.pick_type === 'ou' && (
-          <div>
-            <label className="text-sm">Side</label>
-            <select
-              className="border bg-zinc-900 p-1 rounded w-full"
-              value={newPick.ou_side}
-              onChange={(e) =>
-                setNewPick({ ...newPick, ou_side: e.target.value })
-              }
-            >
-              <option value="">Select…</option>
-              <option value="over">OVER</option>
-              <option value="under">UNDER</option>
-            </select>
-          </div>
-        )}
-
-        <div className="grid md:grid-cols-2 gap-3">
-          <div>
-            <label className="text-sm">Confidence (0–100)</label>
-            <input
-              type="number"
-              className="border bg-zinc-900 p-1 rounded w-full"
-              value={newPick.confidence}
-              onChange={(e) =>
-                setNewPick({ ...newPick, confidence: e.target.value })
-              }
-            />
-          </div>
-
-          <div>
-            <label className="text-sm">Notes</label>
-            <input
-              className="border bg-zinc-900 p-1 rounded w-full"
-              value={newPick.notes}
-              onChange={(e) =>
-                setNewPick({ ...newPick, notes: e.target.value })
-              }
-            />
-          </div>
-        </div>
-
-        <button
-          onClick={addNewPick}
-          className="px-3 py-1 border rounded bg-zinc-800 hover:bg-zinc-700 text-sm"
-        >
-          Add Pick
-        </button>
-      </section>
-
-      {/* Picks */}
-      <section className="border rounded p-4">
-        <h2 className="text-lg font-medium mb-3">AI Picks</h2>
-
-        {picks.length === 0 ? (
-          <p className="text-zinc-400 text-sm">No picks this week.</p>
+        <h2 className="text-lg font-medium">Weekly Picks</h2>
+        {decorated.length === 0 ? (
+          <p className="text-sm text-zinc-400">No picks logged for Week {week}.</p>
         ) : (
           <ul className="divide-y divide-zinc-800">
-            {picks.map((p) => (
-              <li key={p.id} className="py-2 text-sm">
-                <strong>{p.pick_type.toUpperCase()}</strong> —{' '}
-                {p.pick_type === 'spread'
-                  ? `${p.team_short} ${p.line_or_total}`
-                  : `${p.ou_side?.toUpperCase()} ${p.line_or_total}`}
-                {'  '}
-                ({p.home_short} vs {p.away_short})
-              </li>
-            ))}
+            {decorated.map((p) => {
+              const label =
+                p.pick_type === 'spread'
+                  ? `${toShort(p.team_short)} ${p.line_or_total ?? ''}`
+                  : `${toShort(p.ou_side)} ${p.line_or_total ?? ''}`;
+              return (
+                <li key={p.id} className="py-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold">{p.matchup}</div>
+                      <div className="text-zinc-400 text-xs">Score: {p.score}</div>
+                    </div>
+                    <div className="text-xs font-semibold">{p.outcome}</div>
+                  </div>
+                  <div className="text-zinc-300 mt-1">
+                    {p.pick_type.toUpperCase()} — {label || 'N/A'}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
-      </section>
-
-      {/* Summary */}
-      <section className="border rounded p-4">
-        <h2 className="text-lg font-medium mb-2">Summary (This Week)</h2>
-        <p className="text-sm">
-          Picks: {summary.total}
-        </p>
       </section>
     </div>
   );
