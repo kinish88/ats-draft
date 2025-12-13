@@ -132,21 +132,28 @@ export default function TrackingPage() {
       }
       const mapped: AiPick[] = (data ?? []).map((row) => {
         const pickTypeRaw =
-          typeof row.pick_type === 'string' ? row.pick_type.toLowerCase() : '';
+          typeof row.pick_type === 'string' ? row.pick_type.trim().toLowerCase() : '';
+        const sanitizedType = pickTypeRaw.replace(/[^a-z]/g, '');
         const pickType: 'spread' | 'ou' =
-          pickTypeRaw === 'ou' || pickTypeRaw.includes('total') ? 'ou' : 'spread';
-        const line =
-          typeof row.line_or_total === 'number'
-            ? row.line_or_total
-            : row.line_or_total == null
-            ? null
-            : Number(row.line_or_total);
-        const pickValue =
-          typeof row.pick_value === 'number'
-            ? row.pick_value
-            : row.pick_value == null
-            ? null
-            : Number(row.pick_value);
+          sanitizedType === 'ou' || sanitizedType.includes('total') ? 'ou' : 'spread';
+        const parseNumeric = (value: unknown): number | null => {
+          if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+          if (typeof value === 'string') {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : null;
+          }
+          return null;
+        };
+        const line = parseNumeric(row.line_or_total);
+        const pickValue = parseNumeric(row.pick_value);
+        const inferredOuSide =
+          pickType === 'ou'
+            ? sanitizedType.includes('under')
+              ? 'UNDER'
+              : sanitizedType.includes('over')
+              ? 'OVER'
+              : null
+            : null;
         const recommendation =
           typeof row.recommendation === 'string'
             ? row.recommendation
@@ -156,7 +163,7 @@ export default function TrackingPage() {
             ? row.ou_side
             : typeof row.pick_value === 'string'
             ? row.pick_value
-            : null;
+            : inferredOuSide;
         return {
           id: typeof row.id === 'number' ? row.id : Number(row.id ?? 0),
           season_year:
@@ -180,7 +187,7 @@ export default function TrackingPage() {
             typeof row.ou_side === 'string'
               ? row.ou_side
               : pickType === 'ou'
-              ? recommendation
+              ? recommendation ?? inferredOuSide
               : null,
           line_or_total: line ?? pickValue,
           recommendation,
