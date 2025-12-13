@@ -264,12 +264,18 @@ export default function TrackingPage() {
   const decorated = useMemo(() => {
     return picks.map((p) => {
       const game = games.get(p.game_id) ?? null;
-      const score = scoreSnapshot(game);
       const rec = toShort(p.recommendation ?? '');
+      const homeTeam = toShort(p.home_short) || toShort(game?.home) || '—';
+      const awayTeam = toShort(p.away_short) || toShort(game?.away) || '—';
+      const homeFinal = game?.home_score;
+      const awayFinal = game?.away_score;
+      const hasFinalScore =
+        Boolean(game?.is_final) && homeFinal != null && awayFinal != null;
+      const scoreText = hasFinalScore ? `${homeFinal}–${awayFinal}` : '—';
       return {
         ...p,
-        matchup: `${toShort(p.home_short ?? game?.home)} vs ${toShort(p.away_short ?? game?.away)}`,
-        score: score.text,
+        matchup: `${homeTeam} vs ${awayTeam}`,
+        score: scoreText,
         recommendationText: rec,
         outcome: computeOutcome(p, game),
       };
