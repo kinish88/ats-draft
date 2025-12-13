@@ -122,25 +122,34 @@ export default function TrackingPage() {
     (async () => {
       const { data, error } = await supabase
         .from('ai_recommendations')
-        .select(
-          [
-            'id',
-            'season_year',
-            'week_number',
-            'game_id',
-            'pick_type',
-            'home_short',
-            'away_short',
-            'team_short',
-            'ou_side',
-            'line_or_total',
-            'recommendation',
-          ].join(',')
-        )
+        .select('*')
         .eq('season_year', YEAR)
         .eq('week_number', week)
         .order('id');
-      if (!error) setPicks((data ?? []) as AiPick[]);
+      if (error) {
+        console.error('Could not load AI picks', error);
+        return;
+      }
+      const mapped: AiPick[] = (data ?? []).map((row) => ({
+        id: Number(row.id ?? 0),
+        season_year: Number(row.season_year ?? YEAR),
+        week_number: Number(row.week_number ?? week),
+        game_id: Number(row.game_id ?? 0),
+        pick_type: row.pick_type === 'ou' ? 'ou' : 'spread',
+        home_short: typeof row.home_short === 'string' ? row.home_short : null,
+        away_short: typeof row.away_short === 'string' ? row.away_short : null,
+        team_short: typeof row.team_short === 'string' ? row.team_short : null,
+        ou_side: typeof row.ou_side === 'string' ? row.ou_side : null,
+        line_or_total:
+          typeof row.line_or_total === 'number'
+            ? row.line_or_total
+            : row.line_or_total == null
+            ? null
+            : Number(row.line_or_total),
+        recommendation:
+          typeof row.recommendation === 'string' ? row.recommendation : null,
+      }));
+      setPicks(mapped);
     })();
   }, [week, isAdmin]);
 
