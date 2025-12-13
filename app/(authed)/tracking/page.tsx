@@ -124,7 +124,7 @@ export default function TrackingPage() {
         .from('ai_recommendations')
         .select('*')
         .eq('season_year', YEAR)
-        .or(`week_number.eq.${week},week_id.eq.${week}`)
+        .eq('week_number', week)
         .order('id');
       if (error) {
         console.error('Could not load AI picks', error);
