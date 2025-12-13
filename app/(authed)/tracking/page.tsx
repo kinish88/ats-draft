@@ -174,9 +174,7 @@ export default function TrackingPage() {
             typeof row.week_number === 'number'
               ? row.week_number
               : row.week_number == null
-              ? typeof row.week_id === 'number'
-                ? row.week_id
-                : Number(row.week_id ?? week)
+              ? week
               : Number(row.week_number),
           game_id: typeof row.game_id === 'number' ? row.game_id : Number(row.game_id ?? 0),
           pick_type: pickType,
