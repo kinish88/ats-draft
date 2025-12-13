@@ -15,6 +15,7 @@ type AiPick = {
   team_short: string | null;
   ou_side: string | null;
   line_or_total: number | null;
+  recommendation: string | null;
 };
 
 type GameRow = {
@@ -52,7 +53,7 @@ function computeOutcome(pick: AiPick, game?: GameRow | null): Outcome {
   if (score.home == null || score.away == null || pick.line_or_total == null) return '—';
 
   if (pick.pick_type === 'spread') {
-    const team = toShort(pick.team_short);
+    const team = toShort(pick.team_short ?? pick.recommendation);
     const home = toShort(pick.home_short ?? game?.home);
     const away = toShort(pick.away_short ?? game?.away);
     const isHome = team && team === home;
@@ -66,7 +67,7 @@ function computeOutcome(pick: AiPick, game?: GameRow | null): Outcome {
     return 'P';
   }
 
-  const side = toShort(pick.ou_side);
+  const side = toShort(pick.ou_side ?? pick.recommendation);
   const total = (score.home ?? 0) + (score.away ?? 0);
   if (total === pick.line_or_total) return 'P';
   if (side === 'OVER') return total > pick.line_or_total ? 'W' : 'L';
@@ -122,7 +123,19 @@ export default function TrackingPage() {
       const { data, error } = await supabase
         .from('ai_recommendations')
         .select(
-          'id,season_year,week_number,game_id,pick_type,home_short,away_short,team_short,ou_side,line_or_total'
+          [
+            'id',
+            'season_year',
+            'week_number',
+            'game_id',
+            'pick_type',
+            'home_short',
+            'away_short',
+            'team_short',
+            'ou_side',
+            'line_or_total',
+            'recommendation',
+          ].join(',')
         )
         .eq('season_year', YEAR)
         .eq('week_number', week)
@@ -165,10 +178,12 @@ export default function TrackingPage() {
     return picks.map((p) => {
       const game = games.get(p.game_id) ?? null;
       const score = scoreSnapshot(game);
+      const rec = toShort(p.recommendation ?? '');
       return {
         ...p,
         matchup: `${toShort(p.home_short ?? game?.home)} vs ${toShort(p.away_short ?? game?.away)}`,
         score: score.text,
+        recommendationText: rec,
         outcome: computeOutcome(p, game),
       };
     });
@@ -206,6 +221,7 @@ export default function TrackingPage() {
 
       <section className="border rounded p-4 space-y-3">
         <h2 className="text-lg font-medium">Weekly Picks</h2>
+        <div className="text-xs text-zinc-500">Loaded {decorated.length} picks for Week {week}.</div>
         {decorated.length === 0 ? (
           <p className="text-sm text-zinc-400">No picks logged for Week {week}.</p>
         ) : (
@@ -213,8 +229,8 @@ export default function TrackingPage() {
             {decorated.map((p) => {
               const label =
                 p.pick_type === 'spread'
-                  ? `${toShort(p.team_short)} ${p.line_or_total ?? ''}`
-                  : `${toShort(p.ou_side)} ${p.line_or_total ?? ''}`;
+                  ? `${p.recommendationText || toShort(p.team_short)} ${p.line_or_total ?? ''}`
+                  : `${p.recommendationText || toShort(p.ou_side)} ${p.line_or_total ?? ''}`;
               return (
                 <li key={p.id} className="py-3 text-sm">
                   <div className="flex items-center justify-between">
