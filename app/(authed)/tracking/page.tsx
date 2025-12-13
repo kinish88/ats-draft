@@ -173,11 +173,47 @@ export default function TrackingPage() {
           'id,home,away,home_score,away_score,live_home_score,live_away_score,is_final,is_live'
         )
         .in('id', ids);
-      if (error) return;
+      if (error) {
+        console.error('Could not load games for AI picks', error);
+        return;
+      }
       const map = new Map<number, GameRow>();
       for (const row of data ?? []) {
-        const rec = row as GameRow;
-        map.set(rec.id, rec);
+        if (row == null) continue;
+        const normalized: GameRow = {
+          id: typeof row.id === 'number' ? row.id : Number(row.id ?? 0),
+          home: typeof row.home === 'string' ? row.home : '',
+          away: typeof row.away === 'string' ? row.away : '',
+          home_score:
+            typeof row.home_score === 'number'
+              ? row.home_score
+              : row.home_score == null
+              ? null
+              : Number(row.home_score),
+          away_score:
+            typeof row.away_score === 'number'
+              ? row.away_score
+              : row.away_score == null
+              ? null
+              : Number(row.away_score),
+          live_home_score:
+            typeof row.live_home_score === 'number'
+              ? row.live_home_score
+              : row.live_home_score == null
+              ? null
+              : Number(row.live_home_score),
+          live_away_score:
+            typeof row.live_away_score === 'number'
+              ? row.live_away_score
+              : row.live_away_score == null
+              ? null
+              : Number(row.live_away_score),
+          is_final: typeof row.is_final === 'boolean' ? row.is_final : null,
+          is_live: typeof row.is_live === 'boolean' ? row.is_live : null,
+        };
+        if (Number.isFinite(normalized.id)) {
+          map.set(normalized.id, normalized);
+        }
       }
       setGames(map);
     })();
