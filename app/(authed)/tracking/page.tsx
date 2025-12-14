@@ -23,12 +23,12 @@ type GameRow = {
   id: number;
   home: string;
   away: string;
+  home_team_id: number | null;
+  away_team_id: number | null;
   home_score: number | null;
   away_score: number | null;
   live_home_score: number | null;
   live_away_score: number | null;
-  is_final: boolean | null;
-  is_live: boolean | null;
 };
 
 type Outcome = 'W' | 'L' | 'P' | '—';
@@ -59,8 +59,7 @@ function formatPercent(value: number) {
 
 function scoreSnapshot(game?: GameRow | null) {
   if (!game) return { home: null, away: null, text: '—' };
-  const hasFinal =
-    game.is_final === true && game.home_score != null && game.away_score != null;
+  const hasFinal = game.home_score != null && game.away_score != null;
   const hasLive = game.live_home_score != null && game.live_away_score != null;
   const home = hasFinal ? game.home_score : hasLive ? game.live_home_score : null;
   const away = hasFinal ? game.away_score : hasLive ? game.live_away_score : null;
@@ -239,20 +238,79 @@ export default function TrackingPage() {
       const { data, error } = await supabase
         .from('games')
         .select(
-          'id,home,away,home_score,away_score,live_home_score,live_away_score,is_final,is_live'
+          'id,home_team_id,away_team_id,home_score,away_score,live_home_score,live_away_score'
         )
         .in('id', ids);
       if (error) {
         console.error('Could not load games for AI picks', error);
         return;
       }
+      const teamIds = new Set<number>();
+      for (const row of data ?? []) {
+        if (row?.home_team_id != null) {
+          const id =
+            typeof row.home_team_id === 'number'
+              ? row.home_team_id
+              : Number(row.home_team_id);
+          if (Number.isFinite(id)) teamIds.add(id);
+        }
+        if (row?.away_team_id != null) {
+          const id =
+            typeof row.away_team_id === 'number'
+              ? row.away_team_id
+              : Number(row.away_team_id);
+          if (Number.isFinite(id)) teamIds.add(id);
+        }
+      }
+      const teamsMap = new Map<number, string>();
+      if (teamIds.size) {
+        const { data: teamRows, error: teamError } = await supabase
+          .from('teams')
+          .select('id,short_name')
+          .in('id', Array.from(teamIds));
+        if (teamError) {
+          console.error('Could not load teams for AI picks', teamError);
+          return;
+        }
+        for (const team of teamRows ?? []) {
+          if (team == null) continue;
+          const id = typeof team.id === 'number' ? team.id : Number(team.id ?? 0);
+          const shortName = typeof team.short_name === 'string' ? team.short_name : '';
+          if (Number.isFinite(id) && shortName) {
+            teamsMap.set(id, shortName);
+          }
+        }
+      }
       const map = new Map<number, GameRow>();
       for (const row of data ?? []) {
         if (row == null) continue;
+        const id = typeof row.id === 'number' ? row.id : Number(row.id ?? 0);
+        const homeTeamIdRaw =
+          typeof row.home_team_id === 'number'
+            ? row.home_team_id
+            : row.home_team_id == null
+            ? null
+            : Number(row.home_team_id);
+        const awayTeamIdRaw =
+          typeof row.away_team_id === 'number'
+            ? row.away_team_id
+            : row.away_team_id == null
+            ? null
+            : Number(row.away_team_id);
+        const homeTeamId =
+          typeof homeTeamIdRaw === 'number' && Number.isFinite(homeTeamIdRaw)
+            ? homeTeamIdRaw
+            : null;
+        const awayTeamId =
+          typeof awayTeamIdRaw === 'number' && Number.isFinite(awayTeamIdRaw)
+            ? awayTeamIdRaw
+            : null;
         const normalized: GameRow = {
-          id: typeof row.id === 'number' ? row.id : Number(row.id ?? 0),
-          home: typeof row.home === 'string' ? row.home : '',
-          away: typeof row.away === 'string' ? row.away : '',
+          id,
+          home: (homeTeamId != null ? teamsMap.get(homeTeamId) : '') ?? '',
+          away: (awayTeamId != null ? teamsMap.get(awayTeamId) : '') ?? '',
+          home_team_id: homeTeamId,
+          away_team_id: awayTeamId,
           home_score:
             typeof row.home_score === 'number'
               ? row.home_score
@@ -277,8 +335,6 @@ export default function TrackingPage() {
               : row.live_away_score == null
               ? null
               : Number(row.live_away_score),
-          is_final: typeof row.is_final === 'boolean' ? row.is_final : null,
-          is_live: typeof row.is_live === 'boolean' ? row.is_live : null,
         };
         if (Number.isFinite(normalized.id)) {
           map.set(normalized.id, normalized);
@@ -375,19 +431,78 @@ export default function TrackingPage() {
         const { data: gameData, error: gamesError } = await supabase
           .from('games')
           .select(
-            'id,home,away,home_score,away_score,live_home_score,live_away_score,is_final,is_live'
+            'id,home_team_id,away_team_id,home_score,away_score,live_home_score,live_away_score'
           )
           .in('id', ids);
         if (gamesError) {
           console.error('Could not load games for AI summary', gamesError);
           return;
         }
+        const teamIds = new Set<number>();
+        for (const row of gameData ?? []) {
+          if (row?.home_team_id != null) {
+            const id =
+              typeof row.home_team_id === 'number'
+                ? row.home_team_id
+                : Number(row.home_team_id);
+            if (Number.isFinite(id)) teamIds.add(id);
+          }
+          if (row?.away_team_id != null) {
+            const id =
+              typeof row.away_team_id === 'number'
+                ? row.away_team_id
+                : Number(row.away_team_id);
+            if (Number.isFinite(id)) teamIds.add(id);
+          }
+        }
+        const teamsMap = new Map<number, string>();
+        if (teamIds.size) {
+          const { data: teamRows, error: teamError } = await supabase
+            .from('teams')
+            .select('id,short_name')
+            .in('id', Array.from(teamIds));
+          if (teamError) {
+            console.error('Could not load teams for AI summary', teamError);
+            return;
+          }
+          for (const team of teamRows ?? []) {
+            if (team == null) continue;
+            const id = typeof team.id === 'number' ? team.id : Number(team.id ?? 0);
+            const shortName = typeof team.short_name === 'string' ? team.short_name : '';
+            if (Number.isFinite(id) && shortName) {
+              teamsMap.set(id, shortName);
+            }
+          }
+        }
         for (const row of gameData ?? []) {
           if (row == null) continue;
+          const gameId = typeof row.id === 'number' ? row.id : Number(row.id ?? 0);
+          const homeTeamIdRaw =
+            typeof row.home_team_id === 'number'
+              ? row.home_team_id
+              : row.home_team_id == null
+              ? null
+              : Number(row.home_team_id);
+          const awayTeamIdRaw =
+            typeof row.away_team_id === 'number'
+              ? row.away_team_id
+              : row.away_team_id == null
+              ? null
+              : Number(row.away_team_id);
+          const homeTeamId =
+            typeof homeTeamIdRaw === 'number' && Number.isFinite(homeTeamIdRaw)
+              ? homeTeamIdRaw
+              : null;
+          const awayTeamId =
+            typeof awayTeamIdRaw === 'number' && Number.isFinite(awayTeamIdRaw)
+              ? awayTeamIdRaw
+              : null;
           const normalized: GameRow = {
-            id: typeof row.id === 'number' ? row.id : Number(row.id ?? 0),
-            home: typeof row.home === 'string' ? row.home : '',
-            away: typeof row.away === 'string' ? row.away : '',
+            id: gameId,
+            home: (homeTeamId != null ? teamsMap.get(homeTeamId) : '') ?? '',
+            away: (awayTeamId != null ? teamsMap.get(awayTeamId) : '') ?? '',
+            home_team_id: homeTeamId,
+            away_team_id: awayTeamId,
             home_score:
               typeof row.home_score === 'number'
                 ? row.home_score
@@ -412,8 +527,6 @@ export default function TrackingPage() {
                 : row.live_away_score == null
                 ? null
                 : Number(row.live_away_score),
-            is_final: typeof row.is_final === 'boolean' ? row.is_final : null,
-            is_live: typeof row.is_live === 'boolean' ? row.is_live : null,
           };
           if (Number.isFinite(normalized.id)) {
             map.set(normalized.id, normalized);
@@ -447,7 +560,8 @@ export default function TrackingPage() {
       const homeTeam = toShort(game?.home) || toShort(p.home_short) || '—';
       const awayTeam = toShort(game?.away) || toShort(p.away_short) || '—';
       const score = scoreSnapshot(game);
-      const result = game?.is_final === true ? computeOutcome(p, game) : '—';
+      const hasFinal = game?.home_score != null && game?.away_score != null;
+      const result = hasFinal ? computeOutcome(p, game) : '—';
       const confidenceText =
         typeof p.confidence === 'number' ? formatPercent(p.confidence) : null;
       return {
