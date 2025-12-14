@@ -22,8 +22,6 @@ const DEFAULT_PLAYER =
 const LOGO_BASE =
   (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/, '') || null;
 
-const TODAY_ISO = new Date().toISOString();
-
 /* --------------------------------- utils --------------------------------- */
 
 const norm = (s: string) => s.trim().toLowerCase();
@@ -108,26 +106,42 @@ export default function DraftPage() {
   const [onClockPlayerId, setOnClockPlayerId] = useState<string | null>(null);
   const [onClockPlayerName, setOnClockPlayerName] = useState<string | null>(null);
   const [expandedMobileGame, setExpandedMobileGame] = useState<number | null>(null);
+  const [weekError, setWeekError] = useState<string | null>(null);
+  const [noOpenWeek, setNoOpenWeek] = useState(false);
 
   const loadCurrentWeek = useCallback(async () => {
+    setWeekError(null);
+    setNoOpenWeek(false);
     const { data, error } = await supabase
-      .from('weeks')
-      .select('id,week_number,starter_player,on_the_clock_player_id,on_the_clock_player_name')
-      .eq('season_year', YEAR)
-      .lte('start_date', TODAY_ISO)
-      .gte('end_date', TODAY_ISO)
-      .single();
-    if (!error && data) {
-      setWeek(Number(data.week_number));
-      setOnClockPlayerId(
-        data.on_the_clock_player_id ? String(data.on_the_clock_player_id) : null
-      );
-      setOnClockPlayerName(
-        data.on_the_clock_player_name ? String(data.on_the_clock_player_name) : null
-      );
-      setStarter(toStr(data.starter_player || starter || ''));
+      .from('current_open_week')
+      .select('week_id,on_the_clock_player_id,on_the_clock_player_name')
+      .limit(2);
+    if (error) {
+      setWeekError('Unable to load draft week.');
+      return;
     }
-  }, [starter]);
+    if (!data || data.length === 0) {
+      setWeek(null);
+      setNoOpenWeek(true);
+      return;
+    }
+    if (data.length > 1) {
+      setWeek(null);
+      setWeekError('Multiple open draft weeks found. Please contact an admin.');
+      return;
+    }
+    const row = data[0];
+    if (!row?.week_id) {
+      setWeekError('Invalid open draft week response.');
+      setWeek(null);
+      return;
+    }
+    setWeek(Number(row.week_id));
+    setOnClockPlayerId(row.on_the_clock_player_id ? String(row.on_the_clock_player_id) : null);
+    setOnClockPlayerName(
+      row.on_the_clock_player_name ? String(row.on_the_clock_player_name) : null
+    );
+  }, []);
 
   // load current open week from helper view
   useEffect(() => {
@@ -440,6 +454,24 @@ export default function DraftPage() {
     } else {
       loadPicksMerged(week!, true);
     }
+  }
+
+  if (weekError) {
+    return (
+      <div className="max-w-4xl mx-auto p-6">
+        <Toaster position="bottom-center" />
+        <div className="text-red-300">{weekError}</div>
+      </div>
+    );
+  }
+
+  if (noOpenWeek) {
+    return (
+      <div className="max-w-4xl mx-auto p-6">
+        <Toaster position="bottom-center" />
+        <div className="text-zinc-300">No open draft week.</div>
+      </div>
+    );
   }
 
   if (!week) {
