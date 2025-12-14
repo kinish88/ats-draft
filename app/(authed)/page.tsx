@@ -641,9 +641,9 @@ export default function ScoreboardPage() {
         </div>
 
         <div className="flex items-center gap-6">
-          <div className="flex items-center gap-2">
-            <label className="text-sm opacity-70">Week</label>
+          <div className="flex items-center">
             <select
+              aria-label="Week selector"
               className="border rounded p-1 bg-transparent"
               value={week ?? (weeks.length ? Math.max(...weeks) : 1)}
               onChange={(e) => {

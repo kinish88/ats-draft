@@ -388,8 +388,8 @@ export default function TrackingPage() {
       </header>
 
       <div className="flex gap-3 items-center">
-        <label className="text-sm opacity-70">Week</label>
         <select
+          aria-label="Week selector"
           className="border bg-zinc-900 p-1 rounded"
           value={week}
           onChange={(e) => setWeek(Number(e.target.value))}

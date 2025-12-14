@@ -235,9 +235,9 @@ export default function AdminScoresPage() {
 
       {/* Controls */}
       <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2">
-          <label className="text-sm">Week</label>
+        <div className="flex items-center">
           <select
+            aria-label="Week selector"
             className="border rounded p-1 bg-transparent"
             value={week}
             onChange={(e) => setWeek(parseInt(e.target.value, 10))}
