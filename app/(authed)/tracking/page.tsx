@@ -40,7 +40,8 @@ function toShort(value?: string | null) {
 
 function scoreSnapshot(game?: GameRow | null) {
   if (!game) return { home: null, away: null, text: '—' };
-  const hasFinal = game.home_score != null && game.away_score != null;
+  const hasFinal =
+    game.is_final === true && game.home_score != null && game.away_score != null;
   const hasLive = game.live_home_score != null && game.live_away_score != null;
   const home = hasFinal ? game.home_score : hasLive ? game.live_home_score : null;
   const away = hasFinal ? game.away_score : hasLive ? game.live_away_score : null;
@@ -265,17 +266,13 @@ export default function TrackingPage() {
     return picks.map((p) => {
       const game = games.get(p.game_id) ?? null;
       const rec = toShort(p.recommendation ?? '');
-      const homeTeam = toShort(p.home_short) || toShort(game?.home) || '—';
-      const awayTeam = toShort(p.away_short) || toShort(game?.away) || '—';
-      const homeFinal = game?.home_score;
-      const awayFinal = game?.away_score;
-      const hasFinalScore =
-        Boolean(game?.is_final) && homeFinal != null && awayFinal != null;
-      const scoreText = hasFinalScore ? `${homeFinal}–${awayFinal}` : '—';
+      const homeTeam = toShort(game?.home) || toShort(p.home_short) || '—';
+      const awayTeam = toShort(game?.away) || toShort(p.away_short) || '—';
+      const score = scoreSnapshot(game);
       return {
         ...p,
         matchup: `${homeTeam} vs ${awayTeam}`,
-        score: scoreText,
+        score: score.text,
         recommendationText: rec,
         outcome: computeOutcome(p, game),
       };
