@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { getTeamLogoUrl } from '@/lib/logos';
 
 const YEAR = 2025;
 const PLAYERS_ORDERED = ['Big Dawg', 'Pud', 'Kinish'] as const;
@@ -69,9 +70,6 @@ type OuPickRow = {
 
 /* --------------------------------- config -------------------------------- */
 
-const LOGO_BASE =
-  (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/, '') || null;
-
 /* --------------------------------- utils --------------------------------- */
 
 function toNumOrNull(x: unknown): number | null {
@@ -91,8 +89,7 @@ function signed(n: number | null | undefined): string {
   return n > 0 ? `+${n}` : `${n}`;
 }
 function teamLogo(short?: string | null): string | null {
-  if (!short) return null;
-  return LOGO_BASE ? `${LOGO_BASE}/${short}.png` : `/teams/${short}.png`;
+  return getTeamLogoUrl(short);
 }
 function matchup(a?: string, b?: string): string {
   if (!a || !b) return '';

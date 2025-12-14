@@ -80,6 +80,16 @@ export default function StandingsPage() {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<TableRow[]>([]);
   const [throughWeek, setThroughWeek] = useState<number>(1);
+  const leaderName = useMemo(() => {
+    if (!rows.length) return null;
+    return rows.reduce((best, row) => {
+      const bestTotal = best.w + best.l + best.pu;
+      const rowTotal = row.w + row.l + row.pu;
+      const bestPct = bestTotal > 0 ? best.w / bestTotal : 0;
+      const rowPct = rowTotal > 0 ? row.w / rowTotal : 0;
+      return rowPct > bestPct ? row : best;
+    }).name;
+  }, [rows]);
 
   useEffect(() => {
     (async () => {
@@ -245,48 +255,94 @@ export default function StandingsPage() {
   /* -------------------------------- render -------------------------------- */
 
   return (
-    <div className="max-w-6xl mx-auto px-6 py-6">
-      <header className="flex items-baseline justify-between mb-4">
-        <h1 className="text-4xl font-semibold">Season Standings</h1>
-        <div className="text-zinc-300">Through Week {throughWeek}</div>
+    <div className="mx-auto w-full max-w-4xl space-y-6 px-4 py-6">
+      <header className="space-y-1">
+        <h1 className="text-2xl font-semibold">Standings</h1>
+        <p className="text-sm text-zinc-400">Through Week {throughWeek}</p>
       </header>
 
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[820px] border rounded overflow-hidden">
-          <thead className="bg-zinc-900/70 text-zinc-200">
-            <tr>
-              <th className="px-4 py-3 text-left">PLAYER</th>
-              <th className="px-4 py-3 text-center">WEEK WINS</th>
-              <th className="px-4 py-3 text-center">ATS W</th>
-              <th className="px-4 py-3 text-center">ATS L</th>
-              <th className="px-4 py-3 text-center">ATS PU</th>
-              <th className="px-4 py-3 text-center">WIN %</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-zinc-800/70">
-            {loading ? (
-              <tr>
-                <td className="px-4 py-4 text-sm text-zinc-400" colSpan={6}>
-                  Loading…
-                </td>
-              </tr>
-            ) : (
-              rows.map((r) => (
-                <tr key={r.name} className="hover:bg-zinc-900/30">
-                  <td className="px-4 py-4 font-semibold">{r.name}</td>
-                  <td className="px-4 py-4 text-center tabular-nums">{r.weekWins}</td>
-                  <td className="px-4 py-4 text-center tabular-nums">{r.w}</td>
-                  <td className="px-4 py-4 text-center tabular-nums">{r.l}</td>
-                  <td className="px-4 py-4 text-center tabular-nums">{r.pu}</td>
-                  <td className="px-4 py-4 text-center tabular-nums">{r.pct}</td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+      <div className="space-y-3 md:hidden">
+        {loading ? (
+          <div className="text-sm text-zinc-400">Loading…</div>
+        ) : (
+          rows.map((r) => {
+            const isLeader = leaderName === r.name;
+            return (
+              <div
+                key={r.name}
+                className={`rounded-2xl border px-4 py-3 text-sm shadow-sm ${
+                  isLeader
+                    ? 'border-emerald-400/60 bg-emerald-500/5 shadow-emerald-500/20'
+                    : 'border-white/10 bg-white/5'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-base font-semibold text-white">{r.name}</span>
+                </div>
+                <div className="mt-1 flex items-center justify-between text-xs text-zinc-300">
+                  <span>
+                    Week Wins: <span className="font-semibold text-white">{r.weekWins}</span>
+                  </span>
+                  <span>
+                    Win %: <span className="font-semibold text-white tabular-nums">{r.pct}</span>
+                  </span>
+                </div>
+                <div className="mt-3 text-xs uppercase tracking-wide text-zinc-500">ATS</div>
+                <div className="mt-1 flex items-center justify-between text-sm font-medium text-zinc-100">
+                  <span>W <span className="tabular-nums">{r.w}</span></span>
+                  <span>L <span className="tabular-nums">{r.l}</span></span>
+                  <span>P <span className="tabular-nums">{r.pu}</span></span>
+                </div>
+              </div>
+            );
+          })
+        )}
       </div>
 
-      <p className="mt-4 text-sm text-zinc-400">Win% treats pushes as losses.</p>
+      <div className="hidden md:block">
+        <div className="overflow-hidden rounded-2xl border border-white/10 bg-slate-950/50">
+          <table className="w-full table-auto text-sm">
+            <thead className="bg-slate-900/70 text-zinc-300">
+              <tr>
+                <th className="px-4 py-3 text-left font-medium">Player</th>
+                <th className="px-4 py-3 text-right font-medium">Week Wins</th>
+                <th className="px-4 py-3 text-right font-medium">ATS W</th>
+                <th className="px-4 py-3 text-right font-medium">ATS L</th>
+                <th className="px-4 py-3 text-right font-medium">ATS PU</th>
+                <th className="px-4 py-3 text-right font-medium">Win %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr>
+                  <td className="px-4 py-6 text-sm text-zinc-400" colSpan={6}>
+                    Loading…
+                  </td>
+                </tr>
+              ) : (
+                rows.map((r) => {
+                  const isLeader = leaderName === r.name;
+                  return (
+                    <tr
+                      key={r.name}
+                      className={`border-t border-white/5 text-zinc-100 ${
+                        isLeader ? 'bg-emerald-500/5 shadow-inner shadow-emerald-500/30' : 'hover:bg-white/5'
+                      }`}
+                    >
+                      <td className="px-4 py-3 font-semibold">{r.name}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{r.weekWins}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{r.w}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{r.l}</td>
+                      <td className="px-4 py-3 text-right tabular-nums">{r.pu}</td>
+                      <td className="px-4 py-3 text-right font-semibold tabular-nums">{r.pct}</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
