@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { whoIsOnClock, totalAtsPicks, type Player } from '@/lib/draftOrder';
 import toast, { Toaster } from 'react-hot-toast';
+import ControlBar, { ControlBarItem } from '@/components/ControlBar';
 
 /* ------------------------------- constants ------------------------------- */
 
@@ -48,6 +49,8 @@ function fmtSigned(n: number | null | undefined): string {
   if (n == null || n === 0) return 'Pick Em';
   return n > 0 ? `+${n}` : `${n}`;
 }
+const matchupKey = (home?: string | null, away?: string | null) =>
+  home && away ? `${home.toUpperCase()}-${away.toUpperCase()}` : null;
 
 /* --------------------------------- types --------------------------------- */
 
@@ -85,6 +88,7 @@ export default function DraftPage() {
   const [board, setBoard] = useState<BoardRow[]>([]);
   const [picks, setPicks] = useState<PickViewRow[]>([]);
   const [myName, setMyName] = useState<string | null>(null);
+  const [expandedMobileGame, setExpandedMobileGame] = useState<number | null>(null);
 
   // load current open week from helper view
   useEffect(() => {
@@ -325,6 +329,38 @@ export default function DraftPage() {
     return picks.some((p) => p.total_at_pick != null && norm(p.player) === me);
   }, [picks, myName]);
 
+  const myPicksByGame = useMemo(() => {
+    const map = new Map<string, { label: string }>();
+    if (!myName) return map;
+    const me = norm(myName);
+    for (const p of picks) {
+      if (norm(p.player) !== me) continue;
+      const key = matchupKey(p.home_short, p.away_short);
+      if (!key) continue;
+      if (p.picked_team_short) {
+        map.set(key, {
+          label: `${p.picked_team_short} ${p.line_at_pick != null ? fmtSigned(p.line_at_pick) : ''}`.trim(),
+        });
+      } else if (p.total_at_pick != null && p.ou_side) {
+        map.set(key, {
+          label: `${p.ou_side} ${p.total_at_pick}`,
+        });
+      }
+    }
+    return map;
+  }, [picks, myName]);
+
+  const lastPick = picks.length ? picks[picks.length - 1] : null;
+  const lastPickLabel = lastPick
+    ? lastPick.picked_team_short
+      ? `${lastPick.player} — ${lastPick.picked_team_short} ${
+          lastPick.line_at_pick != null ? fmtSigned(lastPick.line_at_pick) : ''
+        } (${lastPick.home_short} v ${lastPick.away_short})`
+      : `${lastPick.player} — ${lastPick.ou_side ?? ''} ${
+          lastPick.total_at_pick ?? '—'
+        } (${lastPick.home_short} v ${lastPick.away_short})`
+    : null;
+
   /* -------------------------------- actions ------------------------------- */
 
   async function makeSpreadPick(row: BoardRow, team_short: string) {
@@ -382,51 +418,38 @@ export default function DraftPage() {
 
   /* -------------------------------- render -------------------------------- */
 
-  return (
-    <div className="max-w-6xl mx-auto p-6 space-y-6">
-      <Toaster position="bottom-center" />
-      <header className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Draft Board</h1>
-        <div className="text-sm opacity-70">Week {week}</div>
-      </header>
+  const clockStatus = draftComplete
+    ? '🏁 Draft complete'
+    : `🟢 On the clock: ${onClock || '—'}`;
+  const userStatus = myName
+    ? `${isMyTurn ? '🟢' : '⏸'} You are ${myName} — ${isMyTurn ? 'your turn' : 'waiting'}`
+    : '⏳ Identifying player…';
+  const draftControlItems: ControlBarItem[] = [
+    {
+      type: 'text',
+      text: clockStatus,
+      className: draftComplete ? 'border-emerald-500/50 bg-emerald-500/10' : '',
+    },
+    {
+      type: 'text',
+      text: userStatus,
+      className: isMyTurn ? 'border-emerald-400/60 bg-emerald-500/10' : '',
+    },
+  ];
+  if (ouPhase && !draftComplete) {
+    draftControlItems.push({
+      type: 'text',
+      text: `O/U phase — order: ${ouOrder.join(' → ')}`,
+      className: 'text-amber-200 border-amber-400/40 bg-amber-500/10',
+    });
+  }
 
-      {/* On the clock / phase banner */}
-      {!draftComplete ? (
-        <div className="text-sm">
-          {!ouPhase ? (
-            <span className="text-zinc-400">
-              On the clock:{' '}
-              <span className="text-zinc-100 font-medium">{onClock}</span>
-              {myName ? (
-                <span className="ml-3">
-                  You are <span className="font-medium">{myName}</span> —{' '}
-                  {isMyTurn ? (
-                    <span className="text-emerald-400 font-medium">your turn</span>
-                  ) : (
-                    <span className="text-zinc-400">wait</span>
-                  )}
-                </span>
-              ) : null}
-            </span>
-          ) : (
-            <span className="text-amber-400">
-              O/U phase — order: {ouOrder.join(' → ')}.{' '}
-              {myName ? (
-                <>
-                  You are <span className="font-medium">{myName}</span> —{' '}
-                  {isMyTurn ? (
-                    <span className="text-emerald-400 font-medium">your turn</span>
-                  ) : myOuAlreadyPicked ? (
-                    <span className="text-zinc-400">you’re done</span>
-                  ) : (
-                    <span className="text-zinc-400">wait</span>
-                  )}
-                </>
-              ) : null}
-            </span>
-          )}
-        </div>
-      ) : (
+  return (
+    <div className="relative max-w-6xl mx-auto p-6 space-y-6 pb-28 md:pb-6">
+      <Toaster position="bottom-center" />
+      <ControlBar items={draftControlItems} />
+
+      {draftComplete && (
         <div className="flex items-center justify-center gap-3 py-2 rounded bg-zinc-900/50 border border-zinc-800">
           <span className="text-emerald-400 font-semibold tracking-wide">
             🏈 PICKS ARE IN 🏈
@@ -434,8 +457,105 @@ export default function DraftPage() {
         </div>
       )}
 
+      {/* ================= MOBILE GAME CARDS ================= */}
+      <section className="md:hidden space-y-3">
+        {board.map((g) => {
+          const key = matchupKey(g.home_short, g.away_short);
+          const myPickInfo = key ? myPicksByGame.get(key) : null;
+          const isLocked = Boolean(myPickInfo);
+          const isExpanded = expandedMobileGame === g.game_id;
+          const toggleCard = () =>
+            setExpandedMobileGame(isExpanded ? null : g.game_id);
+          const homeTaken = pickedTeams.has(g.home_short.toUpperCase());
+          const awayTaken = pickedTeams.has(g.away_short.toUpperCase());
+          const showSpreadButtons = !ouPhase;
+          const showOuButtons = ouPhase;
+          return (
+            <div
+              key={g.game_id}
+              className={`rounded-2xl border px-4 py-3 shadow-sm transition ${
+                isLocked
+                  ? 'border-emerald-400/60 bg-emerald-500/5 shadow-emerald-500/20'
+                  : 'border-white/10 bg-white/5'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={toggleCard}
+                className="flex w-full items-center justify-between text-left"
+              >
+                <div>
+                  <div className="text-sm font-semibold text-white">
+                    {g.home_short} @ {g.away_short}
+                  </div>
+                  <div className="text-xs text-zinc-400 mt-0.5">
+                    Spread: {g.home_short} {fmtSigned(g.home_line)} / {g.away_short}{' '}
+                    {fmtSigned(g.away_line)}
+                  </div>
+                  <div className="text-xs text-zinc-400">
+                    Total: O/U {g.total ?? '—'}
+                  </div>
+                </div>
+                <span
+                  className={`text-lg transition-transform ${
+                    isExpanded ? 'rotate-180' : ''
+                  }`}
+                >
+                  ▾
+                </span>
+              </button>
+              {isLocked && (
+                <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-emerald-400/40 px-2 py-0.5 text-xs text-emerald-200">
+                  🔒 Your pick {myPickInfo?.label ? `· ${myPickInfo.label}` : ''}
+                </div>
+              )}
+              {isExpanded && (
+                <div className="mt-3 space-y-3 text-sm">
+                  {showSpreadButtons && (
+                    <div className="flex flex-col gap-2">
+                      <button
+                        className="rounded-2xl border border-white/15 px-3 py-2 text-left transition hover:border-white/40 disabled:opacity-40"
+                        disabled={!isMyTurn || homeTaken || isLocked}
+                        onClick={() => makeSpreadPick(g, g.home_short)}
+                      >
+                        Pick {g.home_short} ({fmtSigned(g.home_line)})
+                      </button>
+                      <button
+                        className="rounded-2xl border border-white/15 px-3 py-2 text-left transition hover:border-white/40 disabled:opacity-40"
+                        disabled={!isMyTurn || awayTaken || isLocked}
+                        onClick={() => makeSpreadPick(g, g.away_short)}
+                      >
+                        Pick {g.away_short} ({fmtSigned(g.away_line)})
+                      </button>
+                    </div>
+                  )}
+                  {showOuButtons && (
+                    <div className="flex flex-col gap-2">
+                      <button
+                        className="rounded-2xl border border-white/15 px-3 py-2 text-left transition hover:border-white/40 disabled:opacity-40"
+                        disabled={!isMyTurn || g.total == null || myOuAlreadyPicked || isLocked}
+                        onClick={() => makeOuPick(g, 'OVER')}
+                      >
+                        OVER {g.total ?? '—'}
+                      </button>
+                      <button
+                        className="rounded-2xl border border-white/15 px-3 py-2 text-left transition hover:border-white/40 disabled:opacity-40"
+                        disabled={!isMyTurn || g.total == null || myOuAlreadyPicked || isLocked}
+                        onClick={() => makeOuPick(g, 'UNDER')}
+                      >
+                        UNDER {g.total ?? '—'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </section>
+
       {/* ================= GAME LINES (table) ================= */}
-      <section className="border rounded overflow-hidden max-w-4xl mx-auto w-full">
+      <section className="hidden md:block border rounded overflow-hidden max-w-4xl mx-auto w-full">
         <div className="px-3 py-2 text-xs bg-zinc-900/60 border-b border-zinc-800 uppercase tracking-wide">
           Game Lines
         </div>
@@ -478,7 +598,7 @@ export default function DraftPage() {
       </section>
 
       {/* ================= MAKE PICKS (2-col grid) ================= */}
-      <section className="max-w-4xl mx-auto w-full">
+      <section className="hidden md:block max-w-4xl mx-auto w-full">
         <div className="px-3 py-2 text-xs bg-zinc-900/60 border border-zinc-800 rounded-t uppercase tracking-wide">
           Make Picks
         </div>
@@ -489,25 +609,38 @@ export default function DraftPage() {
             const awayTaken = pickedTeams.has(g.away_short.toUpperCase());
             const showSpreadButtons = !ouPhase;
             const showOuButtons = ouPhase;
+            const key = matchupKey(g.home_short, g.away_short);
+            const myPickInfo = key ? myPicksByGame.get(key) : null;
+            const allowActions = !myPickInfo;
 
             return (
-              <div key={g.game_id} className="border rounded p-3 bg-zinc-950/50">
+              <div
+                key={g.game_id}
+                className={`border rounded p-3 bg-zinc-950/50 ${
+                  myPickInfo ? 'border-emerald-400/60 shadow-inner shadow-emerald-500/30' : ''
+                }`}
+              >
                 <div className="text-sm text-zinc-300 mb-2">
                   {g.home_short} vs {g.away_short}
                 </div>
+                {myPickInfo && (
+                  <div className="mb-2 inline-flex items-center gap-1 rounded-full border border-emerald-400/40 px-2 py-0.5 text-xs text-emerald-200">
+                    🔒 Your pick {myPickInfo?.label ? `· ${myPickInfo.label}` : ''}
+                  </div>
+                )}
 
                 {showSpreadButtons && (
                   <div className="flex flex-wrap gap-2">
                     <button
                       className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                      disabled={!isMyTurn || homeTaken}
+                      disabled={!isMyTurn || homeTaken || !allowActions}
                       onClick={() => makeSpreadPick(g, g.home_short)}
                     >
                       Pick {g.home_short} ({fmtSigned(g.home_line)})
                     </button>
                     <button
                       className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                      disabled={!isMyTurn || awayTaken}
+                      disabled={!isMyTurn || awayTaken || !allowActions}
                       onClick={() => makeSpreadPick(g, g.away_short)}
                     >
                       Pick {g.away_short} ({fmtSigned(g.away_line)})
@@ -519,14 +652,14 @@ export default function DraftPage() {
                   <div className="flex flex-wrap gap-2">
                     <button
                       className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                      disabled={!isMyTurn || g.total == null || myOuAlreadyPicked}
+                      disabled={!isMyTurn || g.total == null || myOuAlreadyPicked || !allowActions}
                       onClick={() => makeOuPick(g, 'OVER')}
                     >
                       OVER {g.total ?? '—'}
                     </button>
                     <button
                       className="border rounded px-2 py-1 text-sm disabled:opacity-40"
-                      disabled={!isMyTurn || g.total == null || myOuAlreadyPicked}
+                      disabled={!isMyTurn || g.total == null || myOuAlreadyPicked || !allowActions}
                       onClick={() => makeOuPick(g, 'UNDER')}
                     >
                       UNDER {g.total ?? '—'}
@@ -567,6 +700,15 @@ export default function DraftPage() {
           )}
         </ul>
       </section>
+
+      {lastPick && lastPickLabel && (
+        <div className="md:hidden fixed inset-x-0 bottom-[72px] z-20 px-4">
+          <div className="rounded-2xl border border-white/15 bg-black/85 px-4 py-3 text-sm text-white shadow-2xl shadow-black/40">
+            <div className="text-xs uppercase tracking-wide text-zinc-400">Last pick</div>
+            <div className="mt-1 font-medium">{lastPickLabel}</div>
+          </div>
+        </div>
+      )}
 
       {/* Toast styles */}
 <style jsx global>{`

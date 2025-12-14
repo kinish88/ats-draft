@@ -2,6 +2,10 @@
 
 import CountdownBanner from '@/src/components/CountdownBanner';
 
+type BaseItem = {
+  className?: string;
+};
+
 export type ControlBarItem =
   | {
       type: 'week';
@@ -9,18 +13,18 @@ export type ControlBarItem =
       value: number;
       options: number[];
       onChange: (value: number) => void;
-    }
+    } & BaseItem
   | {
       type: 'toggle';
       label: string;
       ariaLabel?: string;
       checked: boolean;
       onChange: (value: boolean) => void;
-    }
+    } & BaseItem
   | {
       type: 'text';
       text: string;
-    };
+    } & BaseItem;
 
 interface ControlBarProps {
   items?: ControlBarItem[];
@@ -41,7 +45,10 @@ export default function ControlBar({ items = [] }: ControlBarProps) {
             {items.map((item, idx) => {
               if (item.type === 'week') {
                 return (
-                  <div key={`week-${idx}`} className={`${pillBaseCls} min-w-[170px]`}>
+                  <div
+                    key={`week-${idx}`}
+                    className={`${pillBaseCls} min-w-[170px] ${item.className ?? ''}`}
+                  >
                     <select
                       aria-label={item.ariaLabel ?? 'Week selector'}
                       className="h-8 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 text-sm focus:border-white focus:outline-none"
@@ -65,7 +72,7 @@ export default function ControlBar({ items = [] }: ControlBarProps) {
                 return (
                   <label
                     key={`toggle-${idx}`}
-                    className={`${pillBaseCls} select-none ${activeCls}`}
+                    className={`${pillBaseCls} select-none ${activeCls} ${item.className ?? ''}`}
                     aria-label={item.ariaLabel ?? item.label}
                   >
                     <input
@@ -80,7 +87,7 @@ export default function ControlBar({ items = [] }: ControlBarProps) {
               }
 
               return (
-                <div key={`text-${idx}`} className={pillBaseCls}>
+                <div key={`text-${idx}`} className={`${pillBaseCls} ${item.className ?? ''}`}>
                   <span className="text-sm">{item.text}</span>
                 </div>
               );
