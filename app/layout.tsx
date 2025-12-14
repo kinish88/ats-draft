@@ -3,11 +3,10 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import './globals.css';
 import NavLinks from '@/components/NavLinks'; // ← add this
-import CountdownBanner from '@/src/components/CountdownBanner';
 import { NFL_LOGO_URL } from '@/lib/logos';
 
 export const metadata: Metadata = {
-  title: 'ATS Draft',
+  title: 'ATS 2025',
   description: 'Weekly ATS draft with O/U tiebreakers',
 };
 
@@ -21,12 +20,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               {NFL_LOGO_URL ? (
                 <img src={NFL_LOGO_URL} alt="NFL shield" className="h-7 w-7 rounded-sm border border-white/10" />
               ) : null}
-              <Link href="/" className="font-semibold">ATS Draft</Link>
+              <Link href="/" className="font-semibold">ATS 2025</Link>
             </div>
             <NavLinks /> {/* ← replaces the hard-coded links */}
           </div>
         </header>
-        <CountdownBanner />
         <main className="pb-16">{children}</main>
       </body>
     </html>
