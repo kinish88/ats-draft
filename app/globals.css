@@ -1,8 +1,12 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #05070b;
+  --foreground: #f5f6fb;
+  --slate-gradient-start: #0b0f14;
+  --slate-gradient-mid: #0e141b;
+  --slate-gradient-end: #111827;
+  --noise-texture: url("data:image/svg+xml;base64,PHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHdpZHRoPScyMDAnIGhlaWdodD0nMjAwJyB2aWV3Qm94PScwIDAgMjAwIDIwMCc+PGZpbHRlciBpZD0nbicgeD0nMCcgeT0nMCcgd2lkdGg9JzEnIGhlaWdodD0nMSc+PGZlVHVyYnVsZW5jZSB0eXBlPSdmcmFjdGFsTm9pc2UnIGJhc2VGcmVxdWVuY3k9JzAuOCcgbnVtT2N0YXZlcz0nMicgc3RpdGNoVGlsZXM9J3N0aXRjaCcvPjwvZmlsdGVyPjxyZWN0IHdpZHRoPScyMDAnIGhlaWdodD0nMjAwJyBmaWx0ZXI9J3VybCgjbiknIG9wYWNpdHk9JzAuMDE4Jy8+PC9zdmc+");
 }
 
 @theme inline {
@@ -14,13 +18,20 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #05070b;
+    --foreground: #f5f6fb;
   }
 }
 
 body {
-  background: var(--background);
+  background-color: var(--background);
+  background-image:
+    var(--noise-texture),
+    linear-gradient(145deg, var(--slate-gradient-start), var(--slate-gradient-mid) 45%, var(--slate-gradient-end));
+  background-repeat: repeat, no-repeat;
+  background-size: 320px 320px, cover;
+  background-attachment: scroll;
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  min-height: 100vh;
 }

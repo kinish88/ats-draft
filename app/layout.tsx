@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-screen bg-black text-white">
+      <body className="min-h-screen text-white">
         <header className="border-b border-white/10">
           <div className="max-w-5xl mx-auto px-6 py-3 flex items-center justify-between">
             <Link href="/" className="font-semibold">ATS Draft</Link>
