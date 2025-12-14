@@ -22,6 +22,8 @@ const DEFAULT_PLAYER =
 const LOGO_BASE =
   (process.env.NEXT_PUBLIC_TEAM_LOGO_BASE || '').replace(/\/+$/, '') || null;
 
+const TODAY_ISO = new Date().toISOString();
+
 /* --------------------------------- utils --------------------------------- */
 
 const norm = (s: string) => s.trim().toLowerCase();
@@ -109,17 +111,23 @@ export default function DraftPage() {
 
   const loadCurrentWeek = useCallback(async () => {
     const { data, error } = await supabase
-      .from('current_open_week')
-      .select('week_id,on_the_clock_player_id,on_the_clock_player_name')
-      .maybeSingle();
+      .from('weeks')
+      .select('id,week_number,starter_player,on_the_clock_player_id,on_the_clock_player_name')
+      .eq('season_year', YEAR)
+      .lte('start_date', TODAY_ISO)
+      .gte('end_date', TODAY_ISO)
+      .single();
     if (!error && data) {
-      if (data.week_id) setWeek(Number(data.week_id));
-      setOnClockPlayerId(data.on_the_clock_player_id ? String(data.on_the_clock_player_id) : null);
+      setWeek(Number(data.week_number));
+      setOnClockPlayerId(
+        data.on_the_clock_player_id ? String(data.on_the_clock_player_id) : null
+      );
       setOnClockPlayerName(
         data.on_the_clock_player_name ? String(data.on_the_clock_player_name) : null
       );
+      setStarter(toStr(data.starter_player || starter || ''));
     }
-  }, []);
+  }, [starter]);
 
   // load current open week from helper view
   useEffect(() => {
