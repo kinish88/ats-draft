@@ -113,7 +113,7 @@ export default function DraftPage() {
       setNoOpenWeek(false);
       const { data, error } = await supabase
         .from('current_open_week')
-        .select('week_id,starter_player')
+        .select('week_id')
         .limit(2);
       if (error) {
         setWeekError('Unable to load open draft week.');
@@ -136,7 +136,7 @@ export default function DraftPage() {
         return;
       }
       setWeek(Number(row.week_id));
-      setStarter(toStr(row.starter_player || ''));
+      setStarter(null);
     })();
   }, []);
 
