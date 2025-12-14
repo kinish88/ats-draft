@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
+import ControlBar, { ControlBarItem } from '@/components/ControlBar';
 
 /** -------------------- Types -------------------- **/
 type GameForScore = {
@@ -223,8 +224,29 @@ export default function AdminScoresPage() {
   if (!isAdmin) return null;
 
   /** -------------------- Render -------------------- **/
+
+  const weekOptions =
+    weeks.length > 0 ? weeks : Array.from({ length: 18 }, (_, i) => i + 1);
+  const controlItems: ControlBarItem[] = [
+    {
+      type: 'week',
+      label: 'Admin week',
+      ariaLabel: 'Select admin week',
+      value: week,
+      options: weekOptions,
+      onChange: (value) => setWeek(value),
+    },
+    {
+      type: 'toggle',
+      label: 'Only games with picks',
+      ariaLabel: 'Show only games with picks or totals',
+      checked: onlyPicked,
+      onChange: (value) => setOnlyPicked(value),
+    },
+  ];
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-8">
+      <ControlBar items={controlItems} />
       <header className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Admin · Final Scores & Edits</h1>
         <div className="flex gap-4 text-sm">
@@ -234,29 +256,9 @@ export default function AdminScoresPage() {
       </header>
 
       {/* Controls */}
-      <div className="flex items-center gap-4">
-        <div className="flex items-center">
-          <select
-            aria-label="Week selector"
-            className="border rounded p-1 bg-transparent"
-            value={week}
-            onChange={(e) => setWeek(parseInt(e.target.value, 10))}
-          >
-            {weeks.map((w) => <option key={w} value={w}>Week {w}</option>)}
-          </select>
-        </div>
-
-        <label className="text-sm flex items-center gap-2 select-none">
-          <input
-            type="checkbox"
-            checked={onlyPicked}
-            onChange={(e) => setOnlyPicked(e.target.checked)}
-          />
-          Only games with Picks or O/U
-        </label>
-
+      <div className="flex justify-end">
         {/* NEW: refresh buttons */}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="flex items-center gap-2">
           <button
             className="border rounded px-2 py-1 text-sm"
             onClick={() => callAdminRefresh('lines')}

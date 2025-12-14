@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { whoIsOnClock, totalAtsPicks, type Player } from '@/lib/draftOrder';
 import toast, { Toaster } from 'react-hot-toast';
+import ControlBar, { ControlBarItem } from '@/components/ControlBar';
 
 /* ------------------------------- constants ------------------------------- */
 
@@ -382,8 +383,16 @@ export default function DraftPage() {
 
   /* -------------------------------- render -------------------------------- */
 
+  const controlItems: ControlBarItem[] = [
+    {
+      type: 'text',
+      text: `Week ${week}`,
+    },
+  ];
+
   return (
     <div className="max-w-6xl mx-auto p-6 space-y-6">
+      <ControlBar items={controlItems} />
       <Toaster position="bottom-center" />
       <header className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Draft Board</h1>

@@ -3,7 +3,6 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import './globals.css';
 import NavLinks from '@/components/NavLinks'; // ← add this
-import CountdownBanner from '@/src/components/CountdownBanner';
 
 export const metadata: Metadata = {
   title: 'ATS Draft',
@@ -20,7 +19,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <NavLinks /> {/* ← replaces the hard-coded links */}
           </div>
         </header>
-        <CountdownBanner />
         <main className="pb-16">{children}</main>
       </body>
     </html>

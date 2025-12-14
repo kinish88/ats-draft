@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import ControlBar, { ControlBarItem } from '@/components/ControlBar';
 
 const YEAR = 2025;
 const PLAYERS_ORDERED = ['Big Dawg', 'Pud', 'Kinish'] as const;
@@ -612,6 +613,34 @@ export default function ScoreboardPage() {
   /* -------------------------------- render -------------------------------- */
 
   const nflLogo = teamLogo('NFL');
+  const resolvedWeek = week ?? (weeks.length ? Math.max(...weeks) : 1);
+  const weekOptions =
+    weeks.length > 0 ? weeks : Array.from({ length: 18 }, (_, i) => i + 1);
+
+  const handleWeekSelect = (value: number) => {
+    setWeek(value);
+    localStorage.setItem('ats.week.scoreboard', String(value));
+    const params = new URLSearchParams(window.location.search);
+    params.set('week', String(value));
+    window.history.replaceState({}, '', `?${params.toString()}`);
+  };
+
+  const controlItems: ControlBarItem[] = [
+    {
+      type: 'week',
+      label: 'Games',
+      ariaLabel: 'Select week for scoreboard',
+      value: resolvedWeek,
+      options: weekOptions,
+      onChange: handleWeekSelect,
+    },
+    {
+      type: 'toggle',
+      label: 'Show full scoreboard',
+      checked: showBoard,
+      onChange: (next) => setShowBoard(next),
+    },
+  ];
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
@@ -634,44 +663,12 @@ export default function ScoreboardPage() {
         }
       `}</style>
 
+      <ControlBar items={controlItems} />
+
       <header className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <TinyLogo url={nflLogo} alt="NFL" className="w-6 h-6" />
           <h1 className="text-2xl font-semibold">Games</h1>
-        </div>
-
-        <div className="flex items-center gap-6">
-          <div className="flex items-center">
-            <select
-              aria-label="Week selector"
-              className="border rounded p-1 bg-transparent"
-              value={week ?? (weeks.length ? Math.max(...weeks) : 1)}
-              onChange={(e) => {
-                const w = parseInt(e.target.value, 10);
-                setWeek(w);
-                // persist for refreshes and deep links
-                localStorage.setItem('ats.week.scoreboard', String(w));
-                const params = new URLSearchParams(window.location.search);
-                params.set('week', String(w));
-                window.history.replaceState({}, '', `?${params.toString()}`);
-              }}
-            >
-              {weeks.map((w) => (
-                <option key={w} value={w}>
-                  Week {w}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <label className="text-sm flex items-center gap-2 select-none">
-            <input
-              type="checkbox"
-              checked={showBoard}
-              onChange={(e) => setShowBoard(e.target.checked)}
-            />
-            Show full scoreboard
-          </label>
         </div>
       </header>
 

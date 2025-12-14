@@ -25,7 +25,11 @@ const clampRemaining = (ms: number): Remaining => {
 
 const getRemaining = (): Remaining => clampRemaining(TARGET_DATE.getTime() - Date.now());
 
-export default function CountdownBanner() {
+interface CountdownBannerProps {
+  className?: string;
+}
+
+export default function CountdownBanner({ className }: CountdownBannerProps) {
   const [remaining, setRemaining] = useState<Remaining>(() => getRemaining());
   const expired = remaining.totalMs <= 0;
 
@@ -55,23 +59,22 @@ export default function CountdownBanner() {
   }, [expired, remaining]);
 
   return (
-    <div className="px-4 sm:px-6">
-      <div
-        aria-live="polite"
-        role="status"
-        className={[
-          'mx-auto w-full rounded-lg border px-4 py-2 text-center text-xs sm:text-sm transition-colors duration-300',
-          expired
-            ? 'border-emerald-500/60 bg-emerald-900/10 text-emerald-300'
-            : 'border-white/10 bg-gradient-to-r from-slate-950/80 via-slate-900/70 to-slate-950/80 text-slate-100',
-        ].join(' ')}
-      >
-        <span className="font-medium">China Garden — </span>
-        <time dateTime={TARGET_DATE.toISOString()}>
-          <span className="sm:hidden">{formatted.short}</span>
-          <span className="hidden sm:inline">{formatted.full}</span>
-        </time>
-      </div>
+    <div
+      aria-live="polite"
+      role="status"
+      className={[
+        'inline-flex min-h-[2.5rem] items-center justify-center rounded-2xl border px-4 text-center text-xs font-medium tracking-wide text-slate-100 sm:text-sm transition-colors duration-300',
+        expired
+          ? 'border-emerald-500/70 bg-emerald-500/10 text-emerald-200'
+          : 'border-white/20 bg-white/5',
+        className || '',
+      ].join(' ')}
+    >
+      <span className="text-white/90">China Garden — </span>
+      <time dateTime={TARGET_DATE.toISOString()} className="ml-1 font-normal text-white">
+        <span className="sm:hidden">{formatted.short}</span>
+        <span className="hidden sm:inline">{formatted.full}</span>
+      </time>
     </div>
   );
 }

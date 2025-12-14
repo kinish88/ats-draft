@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
+import ControlBar, { ControlBarItem } from '@/components/ControlBar';
 
 type AiPick = {
   id: number;
@@ -377,8 +378,20 @@ export default function TrackingPage() {
   }
   if (!isAdmin) return null;
 
+  const controlItems: ControlBarItem[] = [
+    {
+      type: 'week',
+      label: 'AI tracking',
+      ariaLabel: 'Select week for AI tracking',
+      value: week,
+      options: Array.from({ length: 18 }, (_, i) => i + 1),
+      onChange: (value) => setWeek(value),
+    },
+  ];
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-6">
+      <ControlBar items={controlItems} />
       <header className="space-y-1">
         <h1 className="text-xl font-semibold">Dave1290 AI Tracking</h1>
         <p className="text-sm text-zinc-400">
@@ -386,21 +399,6 @@ export default function TrackingPage() {
           or scoring.
         </p>
       </header>
-
-      <div className="flex gap-3 items-center">
-        <select
-          aria-label="Week selector"
-          className="border bg-zinc-900 p-1 rounded"
-          value={week}
-          onChange={(e) => setWeek(Number(e.target.value))}
-        >
-          {Array.from({ length: 18 }).map((_, idx) => (
-            <option key={idx + 1} value={idx + 1}>
-              Week {idx + 1}
-            </option>
-          ))}
-        </select>
-      </div>
 
       <section className="border rounded p-4 space-y-2">
         <h2 className="text-lg font-medium">AI Season Summary ({YEAR})</h2>

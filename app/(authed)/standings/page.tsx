@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import ControlBar from '@/components/ControlBar';
 
 /* ------------------------------- constants ------------------------------- */
 
@@ -245,7 +246,8 @@ export default function StandingsPage() {
   /* -------------------------------- render -------------------------------- */
 
   return (
-    <div className="max-w-6xl mx-auto px-6 py-6">
+    <div className="max-w-6xl mx-auto px-6 py-6 space-y-6">
+      <ControlBar />
       <header className="flex items-baseline justify-between mb-4">
         <h1 className="text-4xl font-semibold">Season Standings</h1>
         <div className="text-zinc-300">Through Week {throughWeek}</div>
