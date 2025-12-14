@@ -1,9 +1,6 @@
 'use client';
 
-import { useCallback } from 'react';
-import { useRouter } from 'next/navigation';
 import CountdownBanner from '@/src/components/CountdownBanner';
-import { supabase } from '@/lib/supabaseClient';
 
 export type ControlBarItem =
   | {
@@ -28,23 +25,15 @@ export type ControlBarItem =
 
 interface ControlBarProps {
   items?: ControlBarItem[];
-  showLogout?: boolean;
 }
 
 const containerCls =
   'mx-auto w-full rounded-3xl border border-white/10 bg-gradient-to-br from-slate-950/70 via-slate-900/70 to-slate-950/80 px-4 py-4 text-slate-100 shadow-2xl shadow-black/30 backdrop-blur';
 
-const pillCls =
-  'flex h-10 items-center justify-between gap-2 rounded-2xl border border-white/15 bg-white/5 px-4 text-sm text-white/90 shadow-inner shadow-black/20';
+const pillBaseCls =
+  'flex h-10 items-center justify-between gap-2 rounded-2xl border border-white/15 bg-white/5 px-4 text-sm text-white/90 shadow-inner shadow-black/20 transition-colors';
 
-export default function ControlBar({ items = [], showLogout = true }: ControlBarProps) {
-  const router = useRouter();
-
-  const handleLogout = useCallback(async () => {
-    await supabase.auth.signOut();
-    router.replace('/login');
-  }, [router]);
-
+export default function ControlBar({ items = [] }: ControlBarProps) {
   return (
     <div className="px-4 sm:px-6">
       <div className={containerCls}>
@@ -54,7 +43,7 @@ export default function ControlBar({ items = [], showLogout = true }: ControlBar
             {items.map((item, idx) => {
               if (item.type === 'week') {
                 return (
-                  <div key={`week-${idx}`} className={`${pillCls} min-w-[180px]`}>
+                  <div key={`week-${idx}`} className={`${pillBaseCls} min-w-[180px]`}>
                     {item.label && <span className="text-xs uppercase tracking-wide opacity-60">{item.label}</span>}
                     <select
                       aria-label={item.ariaLabel ?? 'Week selector'}
@@ -73,10 +62,13 @@ export default function ControlBar({ items = [], showLogout = true }: ControlBar
               }
 
               if (item.type === 'toggle') {
+                const activeCls = item.checked
+                  ? 'border-emerald-500/70 bg-emerald-500/15 text-emerald-200'
+                  : '';
                 return (
                   <label
                     key={`toggle-${idx}`}
-                    className={`${pillCls} select-none`}
+                    className={`${pillBaseCls} select-none ${activeCls}`}
                     aria-label={item.ariaLabel ?? item.label}
                   >
                     <input
@@ -91,22 +83,12 @@ export default function ControlBar({ items = [], showLogout = true }: ControlBar
               }
 
               return (
-                <div key={`text-${idx}`} className={pillCls}>
+                <div key={`text-${idx}`} className={pillBaseCls}>
                   <span className="text-sm">{item.text}</span>
                 </div>
               );
             })}
           </div>
-
-          {showLogout && (
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="h-10 rounded-2xl border border-white/20 bg-white/10 px-4 text-sm font-semibold text-white transition hover:bg-white/20"
-            >
-              Log out
-            </button>
-          )}
         </div>
       </div>
     </div>

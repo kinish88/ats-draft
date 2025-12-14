@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import ControlBar, { ControlBarItem } from '@/components/ControlBar';
+import TinyLogo from '@/components/TinyLogo';
 
 const YEAR = 2025;
 const PLAYERS_ORDERED = ['Big Dawg', 'Pud', 'Kinish'] as const;
@@ -175,32 +176,6 @@ function scoreInfo(
 }
 
 /* --------------------------------- cells --------------------------------- */
-
-function TinyLogo({
-  url,
-  alt,
-  className,
-}: {
-  url: string | null;
-  alt: string;
-  className?: string;
-}) {
-  if (!url)
-    return (
-      <span className={`inline-block align-middle ${className || 'w-4 h-4 mr-2'}`} />
-    );
-  // Keep <img> to avoid next/image config churn.
-  return (
-    <img
-      alt={alt}
-      src={url}
-      className={`inline-block rounded-sm align-middle ${
-        className || 'w-4 h-4 mr-2'
-      }`}
-      loading="eager"
-    />
-  );
-}
 
 function StatusPill({ outcome }: { outcome: Outcome }) {
   const classes = outcomeClass(outcome);
@@ -628,7 +603,6 @@ export default function ScoreboardPage() {
   const controlItems: ControlBarItem[] = [
     {
       type: 'week',
-      label: 'Games',
       ariaLabel: 'Select week for scoreboard',
       value: resolvedWeek,
       options: weekOptions,
@@ -636,7 +610,8 @@ export default function ScoreboardPage() {
     },
     {
       type: 'toggle',
-      label: 'Show full scoreboard',
+      label: 'All Games',
+      ariaLabel: 'Toggle all games view',
       checked: showBoard,
       onChange: (next) => setShowBoard(next),
     },
