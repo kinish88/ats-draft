@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { whoIsOnClock, totalAtsPicks, type Player } from '@/lib/draftOrder';
 import toast, { Toaster } from 'react-hot-toast';
-import ControlBar, { ControlBarItem } from '@/components/ControlBar';
+import CountdownBanner from '@/src/components/CountdownBanner';
 
 /* ------------------------------- constants ------------------------------- */
 
@@ -51,6 +51,20 @@ function fmtSigned(n: number | null | undefined): string {
 }
 const matchupKey = (home?: string | null, away?: string | null) =>
   home && away ? `${home.toUpperCase()}-${away.toUpperCase()}` : null;
+
+type DraftStatusState = 'ON_THE_CLOCK' | 'WAITING' | 'PAUSED';
+
+function DraftStatusPill({ state, text }: { state: DraftStatusState; text: string }) {
+  const base =
+    'flex-1 rounded-2xl border px-4 py-3 text-sm font-medium shadow-inner shadow-black/30';
+  const variant =
+    state === 'ON_THE_CLOCK'
+      ? 'border-emerald-400/70 bg-emerald-500/10 text-emerald-100'
+      : state === 'PAUSED'
+      ? 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+      : 'border-white/15 bg-white/5 text-white/80';
+  return <div className={`${base} ${variant}`}>{text}</div>;
+}
 
 /* --------------------------------- types --------------------------------- */
 
@@ -425,27 +439,26 @@ export default function DraftPage() {
     : myName
     ? `⏸ You are ${myName} — waiting`
     : '⏳ Identifying player…';
-  const draftControlItems: ControlBarItem[] = [
-    {
-      type: 'text',
-      text: statusText,
-      className: `w-full ${
-        draftComplete ? 'border-emerald-500/50 bg-emerald-500/10' : ''
-      } ${isMyTurn ? 'border-emerald-400/60 bg-emerald-500/10' : ''}`,
-    },
-  ];
-  if (lastPickLabel) {
-    draftControlItems.push({
-      type: 'text',
-      text: `🟣 Last pick: ${lastPickLabel}`,
-      className: 'w-full text-purple-200 border-purple-400/40 bg-purple-500/10',
-    });
-  }
+  const statusState: DraftStatusState = draftComplete
+    ? 'PAUSED'
+    : isMyTurn
+    ? 'ON_THE_CLOCK'
+    : 'WAITING';
 
   return (
     <div className="relative max-w-6xl mx-auto p-6 space-y-6 pb-28 md:pb-6">
       <Toaster position="bottom-center" />
-      <ControlBar items={draftControlItems} />
+      <div className="space-y-3">
+        <CountdownBanner className="w-full" />
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
+          <DraftStatusPill state={statusState} text={statusText} />
+          {lastPickLabel && (
+            <div className="flex-1 rounded-2xl border border-purple-400/30 bg-purple-500/10 px-4 py-3 text-sm font-medium text-purple-100 shadow-inner shadow-black/30 sm:self-start">
+              🟣 Last pick: {lastPickLabel}
+            </div>
+          )}
+        </div>
+      </div>
 
       {draftComplete && (
         <div className="flex items-center justify-center gap-3 py-2 rounded bg-zinc-900/50 border border-zinc-800">
@@ -503,7 +516,13 @@ export default function DraftPage() {
                 </span>
               </button>
               {isLocked && (
-                <div className="mt-2 inline-flex items-center gap-1 rounded-full border border-emerald-400/40 px-2 py-0.5 text-xs text-emerald-200">
+                <div
+                  className={`mt-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-emerald-200 ${
+                    isMyTurn
+                      ? 'border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
+                      : 'border-emerald-400/30'
+                  }`}
+                >
                   🔒 Your pick {myPickInfo?.label ? `· ${myPickInfo.label}` : ''}
                 </div>
               )}
@@ -622,7 +641,13 @@ export default function DraftPage() {
                   {g.home_short} vs {g.away_short}
                 </div>
                 {myPickInfo && (
-                  <div className="mb-2 inline-flex items-center gap-1 rounded-full border border-emerald-400/40 px-2 py-0.5 text-xs text-emerald-200">
+                  <div
+                    className={`mb-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-emerald-200 ${
+                      isMyTurn
+                        ? 'border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
+                        : 'border-emerald-400/30'
+                    }`}
+                  >
                     🔒 Your pick {myPickInfo?.label ? `· ${myPickInfo.label}` : ''}
                   </div>
                 )}
