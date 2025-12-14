@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { whoIsOnClock, totalAtsPicks, type Player } from '@/lib/draftOrder';
 import toast, { Toaster } from 'react-hot-toast';
@@ -102,51 +102,43 @@ export default function DraftPage() {
   const [board, setBoard] = useState<BoardRow[]>([]);
   const [picks, setPicks] = useState<PickViewRow[]>([]);
   const [myName, setMyName] = useState<string | null>(null);
-  const [myUserId, setMyUserId] = useState<string | null>(null);
-  const [onClockPlayerId, setOnClockPlayerId] = useState<string | null>(null);
-  const [onClockPlayerName, setOnClockPlayerName] = useState<string | null>(null);
   const [expandedMobileGame, setExpandedMobileGame] = useState<number | null>(null);
   const [weekError, setWeekError] = useState<string | null>(null);
   const [noOpenWeek, setNoOpenWeek] = useState(false);
 
-  const loadCurrentWeek = useCallback(async () => {
-    setWeekError(null);
-    setNoOpenWeek(false);
-    const { data, error } = await supabase
-      .from('current_open_week')
-      .select('week_id,on_the_clock_player_id,on_the_clock_player_name')
-      .limit(2);
-    if (error) {
-      setWeekError('Unable to load draft week.');
-      return;
-    }
-    if (!data || data.length === 0) {
-      setWeek(null);
-      setNoOpenWeek(true);
-      return;
-    }
-    if (data.length > 1) {
-      setWeek(null);
-      setWeekError('Multiple open draft weeks found. Please contact an admin.');
-      return;
-    }
-    const row = data[0];
-    if (!row?.week_id) {
-      setWeekError('Invalid open draft week response.');
-      setWeek(null);
-      return;
-    }
-    setWeek(Number(row.week_id));
-    setOnClockPlayerId(row.on_the_clock_player_id ? String(row.on_the_clock_player_id) : null);
-    setOnClockPlayerName(
-      row.on_the_clock_player_name ? String(row.on_the_clock_player_name) : null
-    );
-  }, []);
-
   // load current open week from helper view
   useEffect(() => {
-    loadCurrentWeek();
-  }, [loadCurrentWeek]);
+    (async () => {
+      setWeekError(null);
+      setNoOpenWeek(false);
+      const { data, error } = await supabase
+        .from('current_open_week')
+        .select('week_id,starter_player')
+        .limit(2);
+      if (error) {
+        setWeekError('Unable to load open draft week.');
+        return;
+      }
+      if (!data || data.length === 0) {
+        setWeek(null);
+        setNoOpenWeek(true);
+        return;
+      }
+      if (data.length > 1) {
+        setWeek(null);
+        setWeekError('Multiple open draft weeks found. Please contact an admin.');
+        return;
+      }
+      const row = data[0];
+      if (!row?.week_id) {
+        setWeekError('Invalid open draft week response.');
+        setWeek(null);
+        return;
+      }
+      setWeek(Number(row.week_id));
+      setStarter(toStr(row.starter_player || ''));
+    })();
+  }, []);
 
   // identify current user display name (or default)
   useEffect(() => {
@@ -157,7 +149,6 @@ export default function DraftPage() {
         setMyName(DEFAULT_PLAYER);
         return;
       }
-      setMyUserId(uid);
       const { data } = await supabase
         .from('profiles')
         .select('display_name')
@@ -166,17 +157,6 @@ export default function DraftPage() {
       setMyName(toStr(data?.display_name || DEFAULT_PLAYER || ''));
     })();
   }, []);
-
-  /* DB: fetch week starter */
-  async function loadStarter(w: number) {
-    const { data } = await supabase
-      .from('weeks')
-      .select('starter_player')
-      .eq('season_year', YEAR)
-      .eq('week_number', w)
-      .maybeSingle();
-    setStarter(toStr(data?.starter_player || ''));
-  }
 
   /* load board */
   async function loadBoard(w: number) {
@@ -289,13 +269,11 @@ export default function DraftPage() {
     }
     lastCountRef.current = merged.length;
     setPicks(merged);
-    loadCurrentWeek();
   }
 
   // load all for selected week
   useEffect(() => {
     if (!week) return;
-    loadStarter(week);
     loadBoard(week);
     loadPicksMerged(week);
   }, [week]);
@@ -456,24 +434,6 @@ export default function DraftPage() {
     }
   }
 
-  if (weekError) {
-    return (
-      <div className="max-w-4xl mx-auto p-6">
-        <Toaster position="bottom-center" />
-        <div className="text-red-300">{weekError}</div>
-      </div>
-    );
-  }
-
-  if (noOpenWeek) {
-    return (
-      <div className="max-w-4xl mx-auto p-6">
-        <Toaster position="bottom-center" />
-        <div className="text-zinc-300">No open draft week.</div>
-      </div>
-    );
-  }
-
   if (!week) {
     return (
       <div className="max-w-4xl mx-auto p-6">
@@ -485,17 +445,16 @@ export default function DraftPage() {
 
   /* -------------------------------- render -------------------------------- */
 
-  const activePlayerName = onClockPlayerName || onClock || '—';
-  const isMyTurnCanonical =
-    !draftComplete && myUserId != null && onClockPlayerId != null && myUserId === onClockPlayerId;
   const statusText = draftComplete
     ? '🏁 Draft complete'
-    : isMyTurnCanonical
-    ? '🟢 Your turn — Pick now'
-    : `⏳ Waiting — ${activePlayerName} is picking`;
+    : isMyTurn
+    ? `🟢 On the clock: ${onClock || myName || '—'}`
+    : myName
+    ? `⏸ You are ${myName} — waiting`
+    : '⏳ Identifying player…';
   const statusState: DraftStatusState = draftComplete
     ? 'PAUSED'
-    : isMyTurnCanonical
+    : isMyTurn
     ? 'ON_THE_CLOCK'
     : 'WAITING';
 
@@ -572,7 +531,7 @@ export default function DraftPage() {
               {isLocked && (
                 <div
                   className={`mt-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-emerald-200 ${
-                    isMyTurnCanonical
+                    isMyTurn
                       ? 'border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
                       : 'border-emerald-400/30'
                   }`}
@@ -697,7 +656,7 @@ export default function DraftPage() {
                 {myPickInfo && (
                   <div
                     className={`mb-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-emerald-200 ${
-                      isMyTurnCanonical
+                      isMyTurn
                         ? 'border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
                         : 'border-emerald-400/30'
                     }`}
