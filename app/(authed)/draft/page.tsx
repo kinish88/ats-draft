@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { whoIsOnClock, totalAtsPicks, type Player } from '@/lib/draftOrder';
 import toast, { Toaster } from 'react-hot-toast';
@@ -102,18 +102,29 @@ export default function DraftPage() {
   const [board, setBoard] = useState<BoardRow[]>([]);
   const [picks, setPicks] = useState<PickViewRow[]>([]);
   const [myName, setMyName] = useState<string | null>(null);
+  const [myUserId, setMyUserId] = useState<string | null>(null);
+  const [onClockPlayerId, setOnClockPlayerId] = useState<string | null>(null);
+  const [onClockPlayerName, setOnClockPlayerName] = useState<string | null>(null);
   const [expandedMobileGame, setExpandedMobileGame] = useState<number | null>(null);
+
+  const loadCurrentWeek = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('current_open_week')
+      .select('week_id,on_the_clock_player_id,on_the_clock_player_name')
+      .maybeSingle();
+    if (!error && data) {
+      if (data.week_id) setWeek(Number(data.week_id));
+      setOnClockPlayerId(data.on_the_clock_player_id ? String(data.on_the_clock_player_id) : null);
+      setOnClockPlayerName(
+        data.on_the_clock_player_name ? String(data.on_the_clock_player_name) : null
+      );
+    }
+  }, []);
 
   // load current open week from helper view
   useEffect(() => {
-    (async () => {
-      const { data, error } = await supabase
-        .from('current_open_week')
-        .select('week_id')
-        .maybeSingle();
-      if (!error && data?.week_id) setWeek(Number(data.week_id));
-    })();
-  }, []);
+    loadCurrentWeek();
+  }, [loadCurrentWeek]);
 
   // identify current user display name (or default)
   useEffect(() => {
@@ -124,6 +135,7 @@ export default function DraftPage() {
         setMyName(DEFAULT_PLAYER);
         return;
       }
+      setMyUserId(uid);
       const { data } = await supabase
         .from('profiles')
         .select('display_name')
@@ -255,6 +267,7 @@ export default function DraftPage() {
     }
     lastCountRef.current = merged.length;
     setPicks(merged);
+    loadCurrentWeek();
   }
 
   // load all for selected week
@@ -432,16 +445,17 @@ export default function DraftPage() {
 
   /* -------------------------------- render -------------------------------- */
 
+  const activePlayerName = onClockPlayerName || onClock || '—';
+  const isMyTurnCanonical =
+    !draftComplete && myUserId != null && onClockPlayerId != null && myUserId === onClockPlayerId;
   const statusText = draftComplete
     ? '🏁 Draft complete'
-    : isMyTurn
-    ? `🟢 On the clock: ${onClock || myName || '—'}`
-    : myName
-    ? `⏸ You are ${myName} — waiting`
-    : '⏳ Identifying player…';
+    : isMyTurnCanonical
+    ? '🟢 Your turn — Pick now'
+    : `⏳ Waiting — ${activePlayerName} is picking`;
   const statusState: DraftStatusState = draftComplete
     ? 'PAUSED'
-    : isMyTurn
+    : isMyTurnCanonical
     ? 'ON_THE_CLOCK'
     : 'WAITING';
 
@@ -518,7 +532,7 @@ export default function DraftPage() {
               {isLocked && (
                 <div
                   className={`mt-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-emerald-200 ${
-                    isMyTurn
+                    isMyTurnCanonical
                       ? 'border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
                       : 'border-emerald-400/30'
                   }`}
@@ -643,7 +657,7 @@ export default function DraftPage() {
                 {myPickInfo && (
                   <div
                     className={`mb-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-emerald-200 ${
-                      isMyTurn
+                      isMyTurnCanonical
                         ? 'border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
                         : 'border-emerald-400/30'
                     }`}
