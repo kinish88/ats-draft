@@ -16,6 +16,7 @@ type AiPick = {
   ou_side: string | null;
   line_or_total: number | null;
   recommendation: string | null;
+  confidence: number | null;
 };
 
 type GameRow = {
@@ -31,11 +32,29 @@ type GameRow = {
 };
 
 type Outcome = 'W' | 'L' | 'P' | '—';
+type SeasonSummary = {
+  wins: number;
+  losses: number;
+  pushes: number;
+  winPct: number | null;
+};
 
 const YEAR = 2025;
 
 function toShort(value?: string | null) {
   return (value ?? '').trim().toUpperCase();
+}
+
+function normalizeConfidence(value?: number | null) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const scaled = value <= 1 ? value * 100 : value;
+  if (!Number.isFinite(scaled)) return null;
+  return Math.max(0, Math.min(100, scaled));
+}
+
+function formatPercent(value: number) {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded}%` : `${rounded.toFixed(1)}%`;
 }
 
 function scoreSnapshot(game?: GameRow | null) {
@@ -84,6 +103,7 @@ export default function TrackingPage() {
 
   const [picks, setPicks] = useState<AiPick[]>([]);
   const [games, setGames] = useState<Map<number, GameRow>>(new Map());
+  const [seasonSummary, setSeasonSummary] = useState<SeasonSummary | null>(null);
 
   // Admin guard
   useEffect(() => {
@@ -155,6 +175,11 @@ export default function TrackingPage() {
               ? 'OVER'
               : null
             : null;
+        const confidenceValue =
+          parseNumeric(row.confidence) ??
+          parseNumeric(row.confidence_pct) ??
+          parseNumeric(row.probability);
+        const confidence = normalizeConfidence(confidenceValue);
         const recommendation =
           typeof row.recommendation === 'string'
             ? row.recommendation
@@ -190,6 +215,7 @@ export default function TrackingPage() {
               : null,
           line_or_total: line ?? pickValue,
           recommendation,
+          confidence,
         };
       });
       setPicks(mapped);
@@ -262,6 +288,158 @@ export default function TrackingPage() {
     })();
   }, [picks, isAdmin]);
 
+  useEffect(() => {
+    if (!isAdmin) return;
+    (async () => {
+      const { data, error } = await supabase
+        .from('ai_recommendations')
+        .select('*')
+        .eq('season_year', YEAR)
+        .order('id');
+      if (error) {
+        console.error('Could not load AI picks for summary', error);
+        return;
+      }
+      const mapped: AiPick[] = (data ?? []).map((row) => {
+        const pickTypeRaw =
+          typeof row.pick_type === 'string' ? row.pick_type.trim().toLowerCase() : '';
+        const sanitizedType = pickTypeRaw.replace(/[^a-z]/g, '');
+        const pickType: 'spread' | 'ou' =
+          sanitizedType === 'ou' || sanitizedType.includes('total') ? 'ou' : 'spread';
+        const parseNumeric = (value: unknown): number | null => {
+          if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+          if (typeof value === 'string') {
+            const parsed = Number(value);
+            return Number.isFinite(parsed) ? parsed : null;
+          }
+          return null;
+        };
+        const line = parseNumeric(row.line_or_total);
+        const pickValue = parseNumeric(row.pick_value);
+        const inferredOuSide =
+          pickType === 'ou'
+            ? sanitizedType.includes('under')
+              ? 'UNDER'
+              : sanitizedType.includes('over')
+              ? 'OVER'
+              : null
+            : null;
+        const confidenceValue =
+          parseNumeric(row.confidence) ??
+          parseNumeric(row.confidence_pct) ??
+          parseNumeric(row.probability);
+        const confidence = normalizeConfidence(confidenceValue);
+        const recommendation =
+          typeof row.recommendation === 'string'
+            ? row.recommendation
+            : typeof row.team_short === 'string'
+            ? row.team_short
+            : typeof row.ou_side === 'string'
+            ? row.ou_side
+            : typeof row.pick_value === 'string'
+            ? row.pick_value
+            : inferredOuSide;
+        return {
+          id: typeof row.id === 'number' ? row.id : Number(row.id ?? 0),
+          season_year:
+            typeof row.season_year === 'number'
+              ? row.season_year
+              : Number(row.season_year ?? YEAR),
+          week_number:
+            typeof row.week_number === 'number'
+              ? row.week_number
+              : row.week_number == null
+              ? 1
+              : Number(row.week_number),
+          game_id: typeof row.game_id === 'number' ? row.game_id : Number(row.game_id ?? 0),
+          pick_type: pickType,
+          home_short: typeof row.home_short === 'string' ? row.home_short : null,
+          away_short: typeof row.away_short === 'string' ? row.away_short : null,
+          team_short: typeof row.team_short === 'string' ? row.team_short : null,
+          ou_side:
+            typeof row.ou_side === 'string'
+              ? row.ou_side
+              : pickType === 'ou'
+              ? recommendation ?? inferredOuSide
+              : null,
+          line_or_total: line ?? pickValue,
+          recommendation,
+          confidence,
+        };
+      });
+      const ids = Array.from(new Set(mapped.map((p) => p.game_id))).filter((n) =>
+        Number.isFinite(n)
+      );
+      const map = new Map<number, GameRow>();
+      if (ids.length) {
+        const { data: gameData, error: gamesError } = await supabase
+          .from('games')
+          .select(
+            'id,home,away,home_score,away_score,live_home_score,live_away_score,is_final,is_live'
+          )
+          .in('id', ids);
+        if (gamesError) {
+          console.error('Could not load games for AI summary', gamesError);
+          return;
+        }
+        for (const row of gameData ?? []) {
+          if (row == null) continue;
+          const normalized: GameRow = {
+            id: typeof row.id === 'number' ? row.id : Number(row.id ?? 0),
+            home: typeof row.home === 'string' ? row.home : '',
+            away: typeof row.away === 'string' ? row.away : '',
+            home_score:
+              typeof row.home_score === 'number'
+                ? row.home_score
+                : row.home_score == null
+                ? null
+                : Number(row.home_score),
+            away_score:
+              typeof row.away_score === 'number'
+                ? row.away_score
+                : row.away_score == null
+                ? null
+                : Number(row.away_score),
+            live_home_score:
+              typeof row.live_home_score === 'number'
+                ? row.live_home_score
+                : row.live_home_score == null
+                ? null
+                : Number(row.live_home_score),
+            live_away_score:
+              typeof row.live_away_score === 'number'
+                ? row.live_away_score
+                : row.live_away_score == null
+                ? null
+                : Number(row.live_away_score),
+            is_final: typeof row.is_final === 'boolean' ? row.is_final : null,
+            is_live: typeof row.is_live === 'boolean' ? row.is_live : null,
+          };
+          if (Number.isFinite(normalized.id)) {
+            map.set(normalized.id, normalized);
+          }
+        }
+      }
+      let wins = 0;
+      let losses = 0;
+      let pushes = 0;
+      for (const pick of mapped) {
+        const outcome = computeOutcome(pick, map.get(pick.game_id));
+        if (outcome === 'W') wins += 1;
+        else if (outcome === 'L') losses += 1;
+        else if (outcome === 'P') pushes += 1;
+      }
+      const counted = wins + losses + pushes;
+      const winPct = counted ? Math.round(((wins / counted) * 100) * 10) / 10 : null;
+      setSeasonSummary({
+        wins,
+        losses,
+        pushes,
+        winPct,
+      });
+    })();
+  }, [isAdmin]);
+
   const decorated = useMemo(() => {
     return picks.map((p) => {
       const game = games.get(p.game_id) ?? null;
@@ -269,12 +447,16 @@ export default function TrackingPage() {
       const homeTeam = toShort(game?.home) || toShort(p.home_short) || '—';
       const awayTeam = toShort(game?.away) || toShort(p.away_short) || '—';
       const score = scoreSnapshot(game);
+      const result = game?.is_final === true ? computeOutcome(p, game) : '—';
+      const confidenceText =
+        typeof p.confidence === 'number' ? formatPercent(p.confidence) : null;
       return {
         ...p,
         matchup: `${homeTeam} vs ${awayTeam}`,
         score: score.text,
         recommendationText: rec,
-        outcome: computeOutcome(p, game),
+        outcome: result,
+        confidenceText,
       };
     });
   }, [picks, games]);
@@ -309,6 +491,23 @@ export default function TrackingPage() {
         </select>
       </div>
 
+      <section className="border rounded p-4 space-y-2">
+        <h2 className="text-lg font-medium">AI Season Summary ({YEAR})</h2>
+        {seasonSummary ? (
+          <div className="grid grid-cols-2 gap-2 text-sm text-zinc-300">
+            <div>Wins: {seasonSummary.wins}</div>
+            <div>Losses: {seasonSummary.losses}</div>
+            <div>Pushes: {seasonSummary.pushes}</div>
+            <div>
+              Win %:{' '}
+              {seasonSummary.winPct != null ? `${seasonSummary.winPct.toFixed(1)}%` : '—'}
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-zinc-400">Loading season summary…</p>
+        )}
+      </section>
+
       <section className="border rounded p-4 space-y-3">
         <h2 className="text-lg font-medium">Weekly Picks</h2>
         <div className="text-xs text-zinc-500">Loaded {decorated.length} picks for Week {week}.</div>
@@ -317,21 +516,37 @@ export default function TrackingPage() {
         ) : (
           <ul className="divide-y divide-zinc-800">
             {decorated.map((p) => {
-              const label =
+              const numericLine =
+                p.line_or_total != null
+                  ? p.pick_type === 'spread' && p.line_or_total > 0
+                    ? `+${p.line_or_total}`
+                    : `${p.line_or_total}`
+                  : '';
+              const baseDescriptor =
                 p.pick_type === 'spread'
-                  ? `${p.recommendationText || toShort(p.team_short)} ${p.line_or_total ?? ''}`
-                  : `${p.recommendationText || toShort(p.ou_side)} ${p.line_or_total ?? ''}`;
+                  ? toShort(p.team_short) || p.recommendationText
+                  : toShort(p.ou_side) || p.recommendationText;
+              const descriptorIncludesLine =
+                baseDescriptor && numericLine
+                  ? baseDescriptor.includes(`${p.line_or_total}`)
+                  : false;
+              const descriptor =
+                numericLine && !descriptorIncludesLine
+                  ? `${baseDescriptor || ''} ${numericLine}`.trim()
+                  : baseDescriptor?.trim() || numericLine;
+              const pickLabel = `${p.pick_type.toUpperCase()} — ${descriptor || 'N/A'}`;
               return (
-                <li key={p.id} className="py-3 text-sm">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="font-semibold">{p.matchup}</div>
-                      <div className="text-zinc-400 text-xs">Score: {p.score}</div>
-                    </div>
-                    <div className="text-xs font-semibold">{p.outcome}</div>
-                  </div>
-                  <div className="text-zinc-300 mt-1">
-                    {p.pick_type.toUpperCase()} — {label || 'N/A'}
+                <li key={p.id} className="py-3 text-sm space-y-1.5">
+                  <div className="font-semibold">{p.matchup}</div>
+                  <div className="text-zinc-400 text-xs">Score: {p.score}</div>
+                  <div className="text-zinc-300">{pickLabel}</div>
+                  {p.confidenceText ? (
+                    <div className="text-xs text-zinc-400">Confidence: {p.confidenceText}</div>
+                  ) : null}
+                  <div>
+                    <span className="inline-flex items-center rounded border border-zinc-700 px-2 py-0.5 text-xs font-semibold">
+                      {p.outcome}
+                    </span>
                   </div>
                 </li>
               );
