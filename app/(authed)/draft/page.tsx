@@ -355,10 +355,10 @@ export default function DraftPage() {
     ? lastPick.picked_team_short
       ? `${lastPick.player} — ${lastPick.picked_team_short} ${
           lastPick.line_at_pick != null ? fmtSigned(lastPick.line_at_pick) : ''
-        } (${lastPick.home_short} v ${lastPick.away_short})`
+        } (${lastPick.away_short} @ ${lastPick.home_short})`
       : `${lastPick.player} — ${lastPick.ou_side ?? ''} ${
           lastPick.total_at_pick ?? '—'
-        } (${lastPick.home_short} v ${lastPick.away_short})`
+        } (${lastPick.away_short} @ ${lastPick.home_short})`
     : null;
 
   /* -------------------------------- actions ------------------------------- */
@@ -418,29 +418,27 @@ export default function DraftPage() {
 
   /* -------------------------------- render -------------------------------- */
 
-  const clockStatus = draftComplete
+  const statusText = draftComplete
     ? '🏁 Draft complete'
-    : `🟢 On the clock: ${onClock || '—'}`;
-  const userStatus = myName
-    ? `${isMyTurn ? '🟢' : '⏸'} You are ${myName} — ${isMyTurn ? 'your turn' : 'waiting'}`
+    : isMyTurn
+    ? `🟢 On the clock: ${onClock || myName || '—'}`
+    : myName
+    ? `⏸ You are ${myName} — waiting`
     : '⏳ Identifying player…';
   const draftControlItems: ControlBarItem[] = [
     {
       type: 'text',
-      text: clockStatus,
-      className: draftComplete ? 'border-emerald-500/50 bg-emerald-500/10' : '',
-    },
-    {
-      type: 'text',
-      text: userStatus,
-      className: isMyTurn ? 'border-emerald-400/60 bg-emerald-500/10' : '',
+      text: statusText,
+      className: `w-full ${
+        draftComplete ? 'border-emerald-500/50 bg-emerald-500/10' : ''
+      } ${isMyTurn ? 'border-emerald-400/60 bg-emerald-500/10' : ''}`,
     },
   ];
-  if (ouPhase && !draftComplete) {
+  if (lastPickLabel) {
     draftControlItems.push({
       type: 'text',
-      text: `O/U phase — order: ${ouOrder.join(' → ')}`,
-      className: 'text-amber-200 border-amber-400/40 bg-amber-500/10',
+      text: `🟣 Last pick: ${lastPickLabel}`,
+      className: 'w-full text-purple-200 border-purple-400/40 bg-purple-500/10',
     });
   }
 
@@ -700,15 +698,6 @@ export default function DraftPage() {
           )}
         </ul>
       </section>
-
-      {lastPick && lastPickLabel && (
-        <div className="md:hidden fixed inset-x-0 bottom-[72px] z-20 px-4">
-          <div className="rounded-2xl border border-white/15 bg-black/85 px-4 py-3 text-sm text-white shadow-2xl shadow-black/40">
-            <div className="text-xs uppercase tracking-wide text-zinc-400">Last pick</div>
-            <div className="mt-1 font-medium">{lastPickLabel}</div>
-          </div>
-        </div>
-      )}
 
       {/* Toast styles */}
 <style jsx global>{`
