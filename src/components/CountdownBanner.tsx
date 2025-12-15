@@ -70,7 +70,7 @@ export default function CountdownBanner({ className }: CountdownBannerProps = {}
         className || '',
       ].join(' ')}
     >
-      <span className="font-medium">China Garden — </span>
+      <span className="font-medium">China Garden -&nbsp;</span>
       <time dateTime={TARGET_DATE.toISOString()}>
         <span className="sm:hidden">{formatted.short}</span>
         <span className="hidden sm:inline">{formatted.full}</span>
