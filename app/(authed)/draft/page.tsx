@@ -93,6 +93,14 @@ type PickViewRow = {
   game_id_hint?: number | null;
 };
 
+type SpreadPickLockRow = {
+  id: string;
+  player: string;
+  teamShort: string;
+  spreadValue: string;
+  isMine: boolean;
+};
+
 /* -------------------------------- component ------------------------------- */
 
 export default function DraftPage() {
@@ -357,7 +365,7 @@ export default function DraftPage() {
   }, [picks, myName]);
 
   const myPicksByGame = useMemo(() => {
-    const map = new Map<string, { label: string }>();
+    const map = new Map<string, { label: string; kind: 'SPREAD' | 'OU' }>();
     if (!myName) return map;
     const me = norm(myName);
     for (const p of picks) {
@@ -367,11 +375,37 @@ export default function DraftPage() {
       if (p.picked_team_short) {
         map.set(key, {
           label: `${p.picked_team_short} ${p.line_at_pick != null ? fmtSigned(p.line_at_pick) : ''}`.trim(),
+          kind: 'SPREAD',
         });
       } else if (p.total_at_pick != null && p.ou_side) {
         map.set(key, {
           label: `${p.ou_side} ${p.total_at_pick}`,
+          kind: 'OU',
         });
+      }
+    }
+    return map;
+  }, [picks, myName]);
+
+  const spreadLocksByGame = useMemo(() => {
+    const map = new Map<string, SpreadPickLockRow[]>();
+    const me = myName ? norm(myName) : null;
+    for (const p of picks) {
+      if (!p.picked_team_short) continue;
+      const key = matchupKey(p.home_short, p.away_short);
+      if (!key) continue;
+      const lockRow: SpreadPickLockRow = {
+        id: `${p.pick_id}-${p.pick_number}`,
+        player: p.player,
+        teamShort: p.picked_team_short,
+        spreadValue: fmtSigned(p.line_at_pick),
+        isMine: me != null && norm(p.player) === me,
+      };
+      const arr = map.get(key);
+      if (arr) {
+        arr.push(lockRow);
+      } else {
+        map.set(key, [lockRow]);
       }
     }
     return map;
@@ -485,8 +519,12 @@ export default function DraftPage() {
       <section className="md:hidden space-y-3">
         {board.map((g) => {
           const key = matchupKey(g.home_short, g.away_short);
+          const spreadLocks = key ? spreadLocksByGame.get(key) ?? [] : [];
           const myPickInfo = key ? myPicksByGame.get(key) : null;
-          const isLocked = Boolean(myPickInfo);
+          const hasMySpreadPick = spreadLocks.some((row) => row.isMine);
+          const hasMyOuPickHere = myPickInfo?.kind === 'OU';
+          const hasMyLock = hasMySpreadPick || hasMyOuPickHere;
+          const hasOtherLock = !hasMyLock && spreadLocks.length > 0;
           const isExpanded = expandedMobileGame === g.game_id;
           const toggleCard = () =>
             setExpandedMobileGame(isExpanded ? null : g.game_id);
@@ -498,8 +536,10 @@ export default function DraftPage() {
             <div
               key={g.game_id}
               className={`rounded-2xl border px-4 py-3 shadow-sm transition ${
-                isLocked
+                hasMyLock
                   ? 'border-emerald-400/60 bg-emerald-500/5 shadow-emerald-500/20'
+                  : hasOtherLock
+                  ? 'border-amber-400/60 bg-amber-500/5 shadow-amber-500/20'
                   : 'border-white/10 bg-white/5'
               }`}
             >
@@ -528,15 +568,33 @@ export default function DraftPage() {
                   ▾
                 </span>
               </button>
-              {isLocked && (
-                <div
-                  className={`mt-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-emerald-200 ${
-                    isMyTurn
-                      ? 'border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
-                      : 'border-emerald-400/30'
-                  }`}
-                >
-                  🔒 Your pick {myPickInfo?.label ? `· ${myPickInfo.label}` : ''}
+              {(spreadLocks.length > 0 || hasMyOuPickHere) && (
+                <div className="mt-2 flex flex-col gap-1">
+                  {spreadLocks.map((row) => (
+                    <div
+                      key={row.id}
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${
+                        row.isMine
+                          ? isMyTurn
+                            ? 'text-emerald-200 border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
+                            : 'text-emerald-200 border-emerald-400/30'
+                          : 'text-amber-100 border-amber-400/50 bg-amber-500/10'
+                      }`}
+                    >
+                      🔒 {row.isMine ? 'Your pick' : row.player} · {row.teamShort} {row.spreadValue}
+                    </div>
+                  ))}
+                  {hasMyOuPickHere && (
+                    <div
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-emerald-200 ${
+                        isMyTurn
+                          ? 'border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
+                          : 'border-emerald-400/30'
+                      }`}
+                    >
+                      🔒 Your pick {myPickInfo?.label ? `· ${myPickInfo.label}` : ''}
+                    </div>
+                  )}
                 </div>
               )}
               {isExpanded && (
@@ -545,14 +603,14 @@ export default function DraftPage() {
                     <div className="flex flex-col gap-2">
                       <button
                         className="rounded-2xl border border-white/15 px-3 py-2 text-left transition hover:border-white/40 disabled:opacity-40"
-                        disabled={!isMyTurn || homeTaken || isLocked}
+                        disabled={!isMyTurn || homeTaken || hasMyLock}
                         onClick={() => makeSpreadPick(g, g.home_short)}
                       >
                         Pick {g.home_short} ({fmtSigned(g.home_line)})
                       </button>
                       <button
                         className="rounded-2xl border border-white/15 px-3 py-2 text-left transition hover:border-white/40 disabled:opacity-40"
-                        disabled={!isMyTurn || awayTaken || isLocked}
+                        disabled={!isMyTurn || awayTaken || hasMyLock}
                         onClick={() => makeSpreadPick(g, g.away_short)}
                       >
                         Pick {g.away_short} ({fmtSigned(g.away_line)})
@@ -563,14 +621,14 @@ export default function DraftPage() {
                     <div className="flex flex-col gap-2">
                       <button
                         className="rounded-2xl border border-white/15 px-3 py-2 text-left transition hover:border-white/40 disabled:opacity-40"
-                        disabled={!isMyTurn || g.total == null || myOuAlreadyPicked || isLocked}
+                        disabled={!isMyTurn || g.total == null || myOuAlreadyPicked || hasMyLock}
                         onClick={() => makeOuPick(g, 'OVER')}
                       >
                         OVER {g.total ?? '—'}
                       </button>
                       <button
                         className="rounded-2xl border border-white/15 px-3 py-2 text-left transition hover:border-white/40 disabled:opacity-40"
-                        disabled={!isMyTurn || g.total == null || myOuAlreadyPicked || isLocked}
+                        disabled={!isMyTurn || g.total == null || myOuAlreadyPicked || hasMyLock}
                         onClick={() => makeOuPick(g, 'UNDER')}
                       >
                         UNDER {g.total ?? '—'}
@@ -640,28 +698,55 @@ export default function DraftPage() {
             const showSpreadButtons = !ouPhase;
             const showOuButtons = ouPhase;
             const key = matchupKey(g.home_short, g.away_short);
+            const spreadLocks = key ? spreadLocksByGame.get(key) ?? [] : [];
             const myPickInfo = key ? myPicksByGame.get(key) : null;
-            const allowActions = !myPickInfo;
+            const hasMySpreadPick = spreadLocks.some((row) => row.isMine);
+            const hasMyOuPickHere = myPickInfo?.kind === 'OU';
+            const hasMyLock = hasMySpreadPick || hasMyOuPickHere;
+            const hasOtherLock = !hasMyLock && spreadLocks.length > 0;
+            const allowActions = !hasMyLock;
 
             return (
               <div
                 key={g.game_id}
                 className={`border rounded p-3 bg-zinc-950/50 ${
-                  myPickInfo ? 'border-emerald-400/60 shadow-inner shadow-emerald-500/30' : ''
+                  hasMyLock
+                    ? 'border-emerald-400/60 shadow-inner shadow-emerald-500/30'
+                    : hasOtherLock
+                    ? 'border-amber-400/50 shadow-inner shadow-amber-500/30'
+                    : ''
                 }`}
               >
                 <div className="text-sm text-zinc-300 mb-2">
                   {g.home_short} vs {g.away_short}
                 </div>
-                {myPickInfo && (
-                  <div
-                    className={`mb-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-emerald-200 ${
-                      isMyTurn
-                        ? 'border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
-                        : 'border-emerald-400/30'
-                    }`}
-                  >
-                    🔒 Your pick {myPickInfo?.label ? `· ${myPickInfo.label}` : ''}
+                {(spreadLocks.length > 0 || hasMyOuPickHere) && (
+                  <div className="mb-2 flex flex-col gap-1">
+                    {spreadLocks.map((row) => (
+                      <div
+                        key={row.id}
+                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${
+                          row.isMine
+                            ? isMyTurn
+                              ? 'text-emerald-200 border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
+                              : 'text-emerald-200 border-emerald-400/30'
+                            : 'text-amber-100 border-amber-400/50 bg-amber-500/10'
+                        }`}
+                      >
+                        🔒 {row.isMine ? 'Your pick' : row.player} · {row.teamShort} {row.spreadValue}
+                      </div>
+                    ))}
+                    {hasMyOuPickHere && (
+                      <div
+                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs text-emerald-200 ${
+                          isMyTurn
+                            ? 'border-emerald-400/60 bg-emerald-500/10 shadow-[0_0_16px_rgba(16,185,129,0.4)]'
+                            : 'border-emerald-400/30'
+                        }`}
+                      >
+                        🔒 Your pick {myPickInfo?.label ? `· ${myPickInfo.label}` : ''}
+                      </div>
+                    )}
                   </div>
                 )}
 
