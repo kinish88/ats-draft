@@ -151,20 +151,26 @@ function outcomeClass(o: Outcome): string {
 function scoreInfo(
   game?: GameRow
 ): { text: string; isLive: boolean; isFinal: boolean } {
-  if (!game) return { text: '—', isLive: false, isFinal: false };
+  const { home, away, isLive, isFinal } = scoreParts(game);
+  if (home == null || away == null) return { text: '-', isLive, isFinal };
+  return { text: `${home}-${away}`, isLive, isFinal };
+}
+
+function scoreParts(
+  game?: GameRow
+): { home: number | null; away: number | null; isLive: boolean; isFinal: boolean } {
+  if (!game) return { home: null, away: null, isLive: false, isFinal: false };
   const hasFinal = game.home_score != null && game.away_score != null;
   const hasLive = game.live_home_score != null && game.live_away_score != null;
 
   const home = hasFinal ? game.home_score : hasLive ? game.live_home_score : null;
   const away = hasFinal ? game.away_score : hasLive ? game.live_away_score : null;
 
-  if (home == null || away == null)
-    return { text: '—', isLive: false, isFinal: false };
-
   return {
-    text: `${home}–${away}`,
     isLive: Boolean(game.is_live) || (!hasFinal && hasLive),
     isFinal: Boolean(game.is_final) || hasFinal,
+    home,
+    away,
   };
 }
 
@@ -606,7 +612,6 @@ export default function ScoreboardPage() {
 
   /* -------------------------------- render -------------------------------- */
 
-  const nflLogo = teamLogo('NFL');
   const resolvedWeek = week ?? (weeks.length ? Math.max(...weeks) : 1);
   const weekOptions =
     weeks.length > 0 ? weeks : Array.from({ length: 18 }, (_, i) => i + 1);
@@ -668,102 +673,85 @@ export default function ScoreboardPage() {
         ) : (
           (PLAYERS_ORDERED as readonly string[]).map((player) => {
             const rows = picksByPlayer.get(player) ?? [];
+            const ouPick = ouByPlayer.get(player) || null;
             return (
               <div key={player} className="border rounded p-4">
                 <div className="font-semibold mb-3">{player}</div>
 
-                {rows.length === 0 ? (
+                {rows.length === 0 && !ouPick ? (
                   <div className="text-sm text-zinc-400">No picks</div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     {rows.map((r, idx) => {
                       const pairKey = `${r.home_short}-${r.away_short}`;
                       const g = gameByPair.get(pairKey);
                       const outcome = pickOutcomeATS(g, r.team_short, r.spread);
-                      const s = scoreInfo(g);
+                      const s = scoreParts(g);
+                      const scoreText =
+                        s.away == null || s.home == null ? '- -' : `${s.away}-${s.home}`;
+                      const scoreClass =
+                        s.isLive ? 'score-live' : s.isFinal ? 'score-final' : 'text-zinc-300';
 
                       return (
                         <div
                           key={`${player}-${idx}`}
-                          className="flex items-center justify-between"
+                          className="flex flex-col gap-1 border border-zinc-800/60 rounded p-2"
                         >
-                          <div className="flex items-center gap-3">
-                            <TinyLogo url={teamLogo(r.team_short)} alt={r.team_short} />
-                            <span className="font-semibold">{r.team_short}</span>
-                            <span className="text-zinc-400 text-sm">
-                              ({formatGameLabel(r.away_short, r.home_short)})
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-4">
-                            <span className="w-12 text-right">{signed(r.spread)}</span>
-                            <span
-                              className={`tabular-nums text-sm text-zinc-300 ${
-                                s.isLive ? 'score-live' : s.isFinal ? 'score-final' : ''
-                              }`}
-                            >
-                              {s.text}
-                            </span>
-                            <StatusPill outcome={outcome} />
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2">
+                              <TinyLogo url={teamLogo(r.team_short)} alt={r.team_short} />
+                              <span className="font-semibold">{r.team_short}</span>
+                              <span className="text-sm text-zinc-400">{signed(r.spread)}</span>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <div className="flex items-center gap-2 text-sm text-zinc-300">
+                                <TinyLogo url={teamLogo(r.away_short)} alt={r.away_short} />
+                                <span className={`tabular-nums ${scoreClass}`}>{scoreText}</span>
+                                <TinyLogo url={teamLogo(r.home_short)} alt={r.home_short} />
+                              </div>
+                              <StatusPill outcome={outcome} />
+                            </div>
                           </div>
                         </div>
                       );
                     })}
+
+                    {ouPick
+                      ? (() => {
+                          const pairKey = `${ouPick.home_short}-${ouPick.away_short}`;
+                          const g = gameByPair.get(pairKey);
+                          const outcome = pickOutcomeOU(g, ouPick.ou_choice, ouPick.ou_total);
+                          const s = scoreParts(g);
+                          const scoreText =
+                            s.away == null || s.home == null ? '- -' : `${s.away}-${s.home}`;
+                          const scoreClass =
+                            s.isLive ? 'score-live' : s.isFinal ? 'score-final' : 'text-zinc-300';
+                          return (
+                            <div className="border-t border-zinc-800/60 pt-2">
+                              <div className="text-xs italic text-zinc-400 mb-1">Over / Under</div>
+                              <div className="flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2 text-sm text-zinc-300">
+                                  <TinyLogo url={teamLogo(ouPick.away_short)} alt={ouPick.away_short} />
+                                  <span className={`tabular-nums ${scoreClass}`}>{scoreText}</span>
+                                  <TinyLogo url={teamLogo(ouPick.home_short)} alt={ouPick.home_short} />
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  <span className="font-semibold text-sm">
+                                    {`${ouPick.ou_choice} ${ouPick.ou_total}`}
+                                  </span>
+                                  <StatusPill outcome={outcome} />
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })()
+                      : null}
                   </div>
                 )}
               </div>
             );
           })
         )}
-      </section>
-
-      {/* ---------------------------- O/U TIE-BREAKERS ---------------------------- */}
-      <section className="space-y-3">
-        <h2 className="text-lg font-medium">O/U Tie-breakers</h2>
-
-        {(PLAYERS_ORDERED as readonly string[]).map((name) => {
-          const r = ouByPlayer.get(name) || null;
-
-          if (!r) {
-            return (
-              <div key={name} className="border rounded p-3 text-sm text-zinc-400">
-                {name}
-              </div>
-            );
-          }
-
-          const g = gameByPair.get(`${r.home_short}-${r.away_short}`);
-          const outcome = pickOutcomeOU(g, r.ou_choice, r.ou_total);
-          const s = scoreInfo(g);
-
-          return (
-            <div
-              key={name}
-              className="border rounded p-3 flex items-center justify-between"
-            >
-                     <div className="flex items-center gap-3">
-          <TinyLogo url={nflLogo} alt="NFL" />
-          <span className="font-semibold">{name}</span>
-          <span className="text-zinc-300">
-            {formatGameLabel(r.away_short, r.home_short)}
-          </span>
-          <span className="ml-3">{r.ou_choice}</span>
-          <span className="ml-1">{r.ou_total}</span>
-        </div>
-
-              <div className="flex items-center gap-4">
-                <span
-                  className={`tabular-nums text-sm text-zinc-300 ${
-                    s.isLive ? 'score-live' : s.isFinal ? 'score-final' : ''
-                  }`}
-                >
-                  {s.text}
-                </span>
-                <StatusPill outcome={outcome} />
-              </div>
-            </div>
-          );
-        })}
       </section>
 
       {/* --------------------------- FULL SCOREBOARD --------------------------- */}
