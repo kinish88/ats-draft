@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-const TARGET_DATE = new Date('2025-12-19T18:00:00Z');
+// Super Bowl LX – Feb 8, 2026 @ 6:30 PM ET (23:30 UTC)
+const TARGET_DATE = new Date('2026-02-08T23:30:00Z');
 
 type Remaining = {
   totalMs: number;
@@ -70,7 +71,7 @@ export default function CountdownBanner({ className }: CountdownBannerProps = {}
         className || '',
       ].join(' ')}
     >
-      <span className="font-medium">China Garden -&nbsp;</span>
+      <span className="font-medium">The Super Bowl LX -&nbsp;</span>
       <time dateTime={TARGET_DATE.toISOString()}>
         <span className="sm:hidden">{formatted.short}</span>
         <span className="hidden sm:inline">{formatted.full}</span>
