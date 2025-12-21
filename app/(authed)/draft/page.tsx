@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { formatGameLabel } from '@/lib/formatGameLabel';
 import { whoIsOnClock, totalAtsPicks, type Player } from '@/lib/draftOrder';
 import toast, { Toaster } from 'react-hot-toast';
 import CountdownBanner from '@/src/components/CountdownBanner';
@@ -267,7 +268,10 @@ export default function DraftPage() {
             { duration: 4000 }
           );
         } else if (latest.total_at_pick != null && latest.ou_side) {
-          const msg = `${latest.player} picked ${latest.ou_side} ${latest.total_at_pick} — ${latest.home_short} v ${latest.away_short}`;
+          const msg = `${latest.player} picked ${latest.ou_side} ${latest.total_at_pick} - ${formatGameLabel(
+            latest.away_short,
+            latest.home_short
+          )}`;
           toast.custom(
             (t) => <div className={`toast-pop neutral ${t.visible ? 'in' : 'out'}`}>{msg}</div>,
             { duration: 4000 }
@@ -412,14 +416,17 @@ export default function DraftPage() {
   }, [picks, myName]);
 
   const lastPick = picks.length ? picks[picks.length - 1] : null;
+  const lastPickMatchup = lastPick
+    ? formatGameLabel(lastPick.away_short, lastPick.home_short)
+    : null;
   const lastPickLabel = lastPick
     ? lastPick.picked_team_short
-      ? `${lastPick.player} — ${lastPick.picked_team_short} ${
+      ? `${lastPick.player} - ${lastPick.picked_team_short} ${
           lastPick.line_at_pick != null ? fmtSigned(lastPick.line_at_pick) : ''
-        } (${lastPick.away_short} @ ${lastPick.home_short})`
-      : `${lastPick.player} — ${lastPick.ou_side ?? ''} ${
-          lastPick.total_at_pick ?? '—'
-        } (${lastPick.away_short} @ ${lastPick.home_short})`
+        } (${lastPickMatchup})`
+      : `${lastPick.player} - ${lastPick.ou_side ?? ''} ${
+          lastPick.total_at_pick ?? '-'
+        } (${lastPickMatchup})`
     : null;
 
   /* -------------------------------- actions ------------------------------- */
@@ -532,6 +539,7 @@ export default function DraftPage() {
           const awayTaken = pickedTeams.has(g.away_short.toUpperCase());
           const showSpreadButtons = !ouPhase;
           const showOuButtons = ouPhase;
+          const matchupLabel = formatGameLabel(g.away_short, g.home_short);
           return (
             <div
               key={g.game_id}
@@ -550,11 +558,11 @@ export default function DraftPage() {
               >
                 <div>
                   <div className="text-sm font-semibold text-white">
-                    {g.home_short} @ {g.away_short}
+                    {matchupLabel}
                   </div>
                   <div className="text-xs text-zinc-400 mt-0.5">
-                    Spread: {g.home_short} {fmtSigned(g.home_line)} / {g.away_short}{' '}
-                    {fmtSigned(g.away_line)}
+                    Spread: {g.away_short} {fmtSigned(g.away_line)} / {g.home_short}{' '}
+                    {fmtSigned(g.home_line)}
                   </div>
                   <div className="text-xs text-zinc-400">
                     Total: O/U {g.total ?? '—'}
@@ -655,32 +663,35 @@ export default function DraftPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-800/60">
-            {board.map((g) => (
-              <tr key={g.game_id} className="hover:bg-zinc-900/40">
-                <td className="px-3 py-2">
-                  <div className="flex items-center gap-3">
-                    <img
-                      src={teamLogo(g.home_short) || ''}
-                      alt={g.home_short}
-                      className="w-5 h-5 rounded-sm"
-                    />
-                    <span className="font-semibold">{g.home_short}</span>
-                    <span className="text-xs text-zinc-400 ml-1">{fmtSigned(g.home_line)}</span>
-                    <span className="text-zinc-500 mx-2">v</span>
-                    <img
-                      src={teamLogo(g.away_short) || ''}
-                      alt={g.away_short}
-                      className="w-5 h-5 rounded-sm"
-                    />
-                    <span className="font-semibold">{g.away_short}</span>
-                    <span className="text-xs text-zinc-400 ml-1">{fmtSigned(g.away_line)}</span>
-                  </div>
-                </td>
-                <td className="px-3 py-2 text-right text-xs text-zinc-400">
-                  O/U <span className="text-zinc-200">{g.total ?? '—'}</span>
-                </td>
-              </tr>
-            ))}
+            {board.map((g) => {
+              const matchupLabel = formatGameLabel(g.away_short, g.home_short);
+              return (
+                <tr key={g.game_id} className="hover:bg-zinc-900/40">
+                  <td className="px-3 py-2">
+                    <div className="flex items-center gap-3">
+                      <img
+                        src={teamLogo(g.away_short) || ''}
+                        alt={g.away_short}
+                        className="w-5 h-5 rounded-sm"
+                      />
+                      <img
+                        src={teamLogo(g.home_short) || ''}
+                        alt={g.home_short}
+                        className="w-5 h-5 rounded-sm"
+                      />
+                      <span className="font-semibold">{matchupLabel}</span>
+                      <span className="text-xs text-zinc-400 ml-1">
+                        {g.away_short} {fmtSigned(g.away_line)} / {g.home_short}{' '}
+                        {fmtSigned(g.home_line)}
+                      </span>
+                    </div>
+                  </td>
+                  <td className="px-3 py-2 text-right text-xs text-zinc-400">
+                    O/U <span className="text-zinc-200">{g.total ?? '-'}</span>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </section>
@@ -705,6 +716,7 @@ export default function DraftPage() {
             const hasMyLock = hasMySpreadPick || hasMyOuPickHere;
             const hasOtherLock = !hasMyLock && spreadLocks.length > 0;
             const allowActions = !hasMyLock;
+            const matchupLabel = formatGameLabel(g.away_short, g.home_short);
 
             return (
               <div
@@ -717,9 +729,7 @@ export default function DraftPage() {
                     : ''
                 }`}
               >
-                <div className="text-sm text-zinc-300 mb-2">
-                  {g.home_short} vs {g.away_short}
-                </div>
+                <div className="text-sm text-zinc-300 mb-2">{matchupLabel}</div>
                 {(spreadLocks.length > 0 || hasMyOuPickHere) && (
                   <div className="mb-2 flex flex-col gap-1">
                     {spreadLocks.map((row) => (
@@ -802,17 +812,18 @@ export default function DraftPage() {
           ) : (
             picks.map((p) => {
               const isSpread = p.picked_team_short != null;
+              const matchupLabel = formatGameLabel(p.away_short, p.home_short);
               return (
                 <li key={`${p.pick_id}-${p.pick_number}`} className="px-3 py-2">
                   <strong>{p.player}</strong>{' '}
                   {isSpread ? (
                     <>
                       picked <strong>{p.picked_team_short}</strong>{' '}
-                      {p.line_at_pick != null ? fmtSigned(p.line_at_pick) : ''} — {p.home_short} v {p.away_short}
+                      {p.line_at_pick != null ? fmtSigned(p.line_at_pick) : ''} - {matchupLabel}
                     </>
                   ) : (
                     <>
-                      O/U — <strong>{p.home_short} v {p.away_short}</strong> {p.ou_side} {p.total_at_pick ?? '—'}
+                      O/U - <strong>{matchupLabel}</strong> {p.ou_side} {p.total_at_pick ?? '-'}
                     </>
                   )}
                 </li>

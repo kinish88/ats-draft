@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
+import { formatGameLabel } from '@/lib/formatGameLabel';
 
 type AiPick = {
   id: number;
@@ -348,7 +349,7 @@ export default function TrackingPage() {
         typeof p.confidence === 'number' ? formatPercent(p.confidence) : null;
       return {
         ...p,
-        matchup: `${homeTeam} vs ${awayTeam}`,
+        matchup: formatGameLabel(awayTeam, homeTeam),
         score: score.text,
         recommendationText: rec,
         outcome: result,

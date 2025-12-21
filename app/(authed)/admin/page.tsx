@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
+import { formatGameLabel } from '@/lib/formatGameLabel';
 
 /** -------------------- Types -------------------- **/
 type GameForScore = {
@@ -284,7 +285,7 @@ export default function AdminScoresPage() {
             {rows.map((r) => (
               <div key={r.game_id} className="p-2 border rounded">
                 <div className="grid grid-cols-6 gap-2 items-center">
-                  <div className="col-span-2 text-sm">{r.home} vs {r.away}</div>
+                  <div className="col-span-2 text-sm">{formatGameLabel(r.away, r.home)}</div>
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-gray-400">Home</span>
                     <input
@@ -351,13 +352,13 @@ export default function AdminScoresPage() {
           const value = spreadEdits[r.pick_id] ?? r.spread_at_pick;
 
           return (
-            <div key={r.pick_id} className="grid grid-cols-7 gap-2 items-center p-2 border rounded text-sm">
-              <div>#{r.pick_number}</div>
-              <div className="font-medium">{r.player}</div>
-              <div className="col-span-2">{r.home_short} v {r.away_short}</div>
-              <div>Team: <b>{r.team_short}</b></div>
-              <div className="flex items-center gap-2">
-                <label>Spread</label>
+              <div key={r.pick_id} className="grid grid-cols-7 gap-2 items-center p-2 border rounded text-sm">
+                <div>#{r.pick_number}</div>
+                <div className="font-medium">{r.player}</div>
+                <div className="col-span-2">{formatGameLabel(r.away_short, r.home_short)}</div>
+                <div>Team: <b>{r.team_short}</b></div>
+                <div className="flex items-center gap-2">
+                  <label>Spread</label>
                 <input
                   type="number"
                   className="w-20 border rounded p-1 bg-transparent"
@@ -396,7 +397,7 @@ export default function AdminScoresPage() {
           return (
             <div key={`${r.player}-${idx}`} className="grid grid-cols-6 gap-2 items-center p-2 border rounded text-sm">
               <div className="font-medium">{r.player}</div>
-              <div className="col-span-2">{r.home_short} v {r.away_short}</div>
+              <div className="col-span-2">{formatGameLabel(r.away_short, r.home_short)}</div>
               <div>
                 <select
                   className="border rounded p-1 bg-transparent"

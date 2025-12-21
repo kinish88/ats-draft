@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { formatGameLabel } from '@/lib/formatGameLabel';
 import { getTeamLogoUrl } from '@/lib/logos';
 import ControlBar, { ControlBarItem } from '@/components/ControlBar';
 
@@ -91,10 +92,6 @@ function signed(n: number | null | undefined): string {
 }
 function teamLogo(short?: string | null): string | null {
   return getTeamLogoUrl(short);
-}
-function matchup(a?: string, b?: string): string {
-  if (!a || !b) return '';
-  return `${a} v ${b}`;
 }
 
 type Outcome = 'win' | 'loss' | 'push' | 'pending';
@@ -694,7 +691,7 @@ export default function ScoreboardPage() {
                             <TinyLogo url={teamLogo(r.team_short)} alt={r.team_short} />
                             <span className="font-semibold">{r.team_short}</span>
                             <span className="text-zinc-400 text-sm">
-                              ({matchup(r.home_short, r.away_short)})
+                              ({formatGameLabel(r.away_short, r.home_short)})
                             </span>
                           </div>
 
@@ -748,7 +745,7 @@ export default function ScoreboardPage() {
           <TinyLogo url={nflLogo} alt="NFL" />
           <span className="font-semibold">{name}</span>
           <span className="text-zinc-300">
-            {matchup(r.home_short, r.away_short)}
+            {formatGameLabel(r.away_short, r.home_short)}
           </span>
           <span className="ml-3">{r.ou_choice}</span>
           <span className="ml-1">{r.ou_total}</span>
@@ -778,17 +775,16 @@ export default function ScoreboardPage() {
           ) : (
             games.map((g) => {
               const s = scoreInfo(g);
+              const matchupLabel = formatGameLabel(g.away, g.home);
               return (
                 <div
                   key={g.id}
                   className="border rounded p-2 flex items-center justify-between"
                 >
                   <div className="flex items-center gap-2">
-                    <TinyLogo url={teamLogo(g.home)} alt={g.home} />
-                    <span className="w-10">{g.home}</span>
-                    <span className="text-sm text-zinc-500">v</span>
                     <TinyLogo url={teamLogo(g.away)} alt={g.away} />
-                    <span className="w-10">{g.away}</span>
+                    <TinyLogo url={teamLogo(g.home)} alt={g.home} />
+                    <span className="text-sm text-zinc-300">{matchupLabel}</span>
                   </div>
                   <div
                     className={`tabular-nums ${

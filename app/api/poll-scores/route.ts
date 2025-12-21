@@ -1,4 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
+import { formatGameLabel } from '@/lib/formatGameLabel';
 
 export const runtime = 'nodejs';
 
@@ -57,23 +58,26 @@ export async function GET(req: Request) {
       const hShort = nameToShort.get(g.home_team);
       const aShort = nameToShort.get(g.away_team);
       if (!hShort || !aShort) {
-        notes.push(`skip: unmapped ${g.home_team} vs ${g.away_team}`);
+        notes.push(`skip: unmapped ${formatGameLabel(g.away_team, g.home_team)}`);
         continue;
       }
 
       const hScore = toInt(g.scores.find(s => s.name === g.home_team)?.score);
       const aScore = toInt(g.scores.find(s => s.name === g.away_team)?.score);
       if (hScore === null || aScore === null) {
-        notes.push(`skip: missing numeric scores for ${g.home_team} vs ${g.away_team}`);
+        notes.push(
+          `skip: missing numeric scores for ${formatGameLabel(g.away_team, g.home_team)}`
+        );
         continue;
       }
 
       const year = new Date(g.commence_time).getUTCFullYear();
       attempted++;
+      const matchupLabel = formatGameLabel(aShort, hShort);
 
       if (dryRun) {
         notes.push(
-          `would set LIVE ${year} ${hShort}-${aShort} => ${hScore}-${aScore} (completed=${g.completed})`
+          `would set LIVE ${year} ${matchupLabel} => ${hScore}-${aScore} (completed=${g.completed})`
         );
         continue;
       }
@@ -88,7 +92,7 @@ export async function GET(req: Request) {
           p_away_score: aScore,
           p_completed: g.completed,
         });
-        if (error) notes.push(`live fail: ${hShort}-${aShort} -> ${error.message}`);
+        if (error) notes.push(`live fail: ${matchupLabel} -> ${error.message}`);
         else updatedLive++;
       }
 

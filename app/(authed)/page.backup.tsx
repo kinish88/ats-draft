@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+import { formatGameLabel } from '@/lib/formatGameLabel';
 
 const YEAR = 2025;
 
@@ -91,11 +92,6 @@ function teamLogo(short?: string | null): string | null {
   if (!short) return null;
   // served from /public/teams/*.png
   return `/teams/${short}.png`;
-}
-
-function matchup(a?: string, b?: string): string {
-  if (!a || !b) return '';
-  return `${a} v ${b}`;
 }
 
 type Outcome = 'win' | 'loss' | 'push' | 'pending';
@@ -384,7 +380,7 @@ export default function ScoreboardPage() {
                             <TinyLogo url={teamLogo(r.team_short)} alt={r.team_short} />
                             <span className="w-14">{r.team_short}</span>
                             <span className="text-zinc-400 text-sm">
-                              ({matchup(r.home_short, r.away_short)})
+                              ({formatGameLabel(r.away_short, r.home_short)})
                             </span>
                           </div>
 
@@ -423,10 +419,12 @@ export default function ScoreboardPage() {
           return (
             <div key={name} className="border rounded p-3 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <TinyLogo url={teamLogo(r.home_short)} alt={r.home_short} />
                 <TinyLogo url={teamLogo(r.away_short)} alt={r.away_short} />
+                <TinyLogo url={teamLogo(r.home_short)} alt={r.home_short} />
                 <span className="mr-2">{name}</span>
-                <span className="text-zinc-300">{matchup(r.home_short, r.away_short)}</span>
+                <span className="text-zinc-300">
+                  {formatGameLabel(r.away_short, r.home_short)}
+                </span>
                 <span className="ml-3">{r.ou_choice}</span>
                 <span className="ml-1">{r.ou_total}</span>
               </div>
@@ -449,11 +447,11 @@ export default function ScoreboardPage() {
             return (
               <div key={g.id} className="border rounded p-2 flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <TinyLogo url={teamLogo(g.home)} alt={g.home} />
-                  <span className="w-10">{g.home}</span>
-                  <span className="text-sm text-zinc-500">v</span>
-                  <TinyLogo url={teamLogo(g.away)} alt={g.away} />
-                  <span className="w-10">{g.away}</span>
+                    <TinyLogo url={teamLogo(g.away)} alt={g.away} />
+                    <TinyLogo url={teamLogo(g.home)} alt={g.home} />
+                    <span className="text-sm text-zinc-300">
+                      {formatGameLabel(g.away, g.home)}
+                    </span>
                 </div>
                 <div className="tabular-nums">
                   {home != null && away != null ? `${home} — ${away}` : '— —'}
