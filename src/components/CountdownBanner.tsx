@@ -71,7 +71,7 @@ export default function CountdownBanner({ className }: CountdownBannerProps = {}
         className || '',
       ].join(' ')}
     >
-      <span className="font-medium">The Super Bowl LX -&nbsp;</span>
+      <span className="font-medium">Super Bowl LX -&nbsp;</span>
       <time dateTime={TARGET_DATE.toISOString()}>
         <span className="sm:hidden">{formatted.short}</span>
         <span className="hidden sm:inline">{formatted.full}</span>
