@@ -359,14 +359,12 @@ export default function TrackingPage() {
           : (baseDescriptor || numericLine).trim() || 'N/A';
 
       const matchupLabel = formatGameLabel(awayTeamShort || '-', homeTeamShort || '-');
-      const confidenceDisplay = confidenceText ? ` (${confidenceText})` : '';
-      const leftLabel =
-        p.pick_type === 'ou'
-          ? `Week ${p.week_number} - ${matchupLabel} ${descriptor}${confidenceDisplay}`.trim()
-          : `Week ${p.week_number} - ${descriptor}${confidenceDisplay}`.trim();
+      const baseLabel = p.pick_type === 'ou' ? `O/U - ${descriptor}` : descriptor;
 
       const scoreText =
         score.away != null && score.home != null ? `${score.away} - ${score.home}` : score.text;
+
+      const pickTeamShort = p.pick_type === 'spread' ? toShort(p.team_short ?? rec) : null;
 
       return {
         ...p,
@@ -378,9 +376,11 @@ export default function TrackingPage() {
         descriptor,
         homeTeamShort,
         awayTeamShort,
-        leftLabel,
+        baseLabel,
         homeLogo: getTeamLogoUrl(homeTeamShort),
         awayLogo: getTeamLogoUrl(awayTeamShort),
+        pickLogo: getTeamLogoUrl(pickTeamShort),
+        pickTeamShort,
       };
     });
   }, [seasonPicks, games]);
@@ -451,8 +451,21 @@ export default function TrackingPage() {
                   {picks.map((p) => (
                     <li key={p.id} className="py-3">
                       <div className="flex flex-wrap items-center gap-3">
-                        <div className="flex-1 min-w-[220px] text-sm text-zinc-100 leading-snug">
-                          {p.leftLabel}
+                        <div className="flex-1 min-w-[220px] text-sm text-zinc-100 leading-snug flex items-center gap-2">
+                          {p.pickLogo ? (
+                            <img
+                              src={p.pickLogo}
+                              alt={p.pickTeamShort ?? p.team_short ?? ''}
+                              className="w-6 h-6 rounded-sm object-contain"
+                              loading="eager"
+                            />
+                          ) : (
+                            <span className="w-6 h-6" />
+                          )}
+                          <span>{p.baseLabel}</span>
+                          {p.confidenceText ? (
+                            <span className="italic text-zinc-400">({p.confidenceText})</span>
+                          ) : null}
                         </div>
                         <div className="flex-1 min-w-[180px] flex items-center justify-center gap-2 text-sm text-zinc-300">
                           {p.awayLogo ? (
