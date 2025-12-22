@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { formatGameLabel } from '@/lib/formatGameLabel';
-import { getTeamLogoUrl } from '@/lib/logos';
+import { getTeamLogoUrl, NFL_LOGO_URL } from '@/lib/logos';
 
 type AiPick = {
   id: number;
@@ -379,7 +379,7 @@ export default function TrackingPage() {
         baseLabel,
         homeLogo: getTeamLogoUrl(homeTeamShort),
         awayLogo: getTeamLogoUrl(awayTeamShort),
-        pickLogo: getTeamLogoUrl(pickTeamShort),
+        pickLogo: p.pick_type === 'ou' ? NFL_LOGO_URL : getTeamLogoUrl(pickTeamShort),
         pickTeamShort,
       };
     });
