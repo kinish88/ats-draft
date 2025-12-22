@@ -79,12 +79,13 @@ const outcomeBadgeStyles: Record<Outcome, string> = {
   W: 'border-emerald-500/40 text-emerald-300 bg-emerald-500/5',
   L: 'border-rose-500/40 text-rose-300 bg-rose-500/5',
   P: 'border-amber-500/40 text-amber-300 bg-amber-500/5',
-  '—': 'border-zinc-700 text-zinc-400',
+  '-': 'border-zinc-700 text-zinc-400',
 };
+const OUTCOME_PENDING: Outcome = '-';
 
 function computeOutcome(pick: AiPick, game?: GameRow | null): Outcome {
   const score = scoreSnapshot(game);
-  if (score.home == null || score.away == null || pick.line_or_total == null) return '-';
+  if (score.home == null || score.away == null || pick.line_or_total == null) return OUTCOME_PENDING;
 
   if (pick.pick_type === 'spread') {
     const team = toShort(pick.team_short ?? pick.recommendation);
@@ -92,7 +93,7 @@ function computeOutcome(pick: AiPick, game?: GameRow | null): Outcome {
     const away = toShort(pick.away_short ?? game?.away);
     const isHome = team && team === home;
     const isAway = team && team === away;
-    if (!isHome && !isAway) return '—';
+    if (!isHome && !isAway) return OUTCOME_PENDING;
     const pickScore = isHome ? score.home : score.away;
     const oppScore = isHome ? score.away : score.home;
     const adj = (pickScore ?? 0) + pick.line_or_total;
