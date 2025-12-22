@@ -33,7 +33,7 @@ type GameRow = {
   live_away_score: number | null;
 };
 
-type Outcome = 'W' | 'L' | 'P' | '—';
+type Outcome = 'W' | 'L' | 'P' | '-';
 type SeasonSummary = {
   wins: number;
   losses: number;
@@ -75,11 +75,12 @@ function scoreSnapshot(game?: GameRow | null) {
   return { home: game.home_score, away: game.away_score, text: `${game.home_score}–${game.away_score}` };
 }
 
-const outcomeBadgeStyles: Record<Outcome, string> = {
+type OutcomeStyles = { W: string; L: string; P: string; '-': string };
+const outcomeBadgeStyles: OutcomeStyles = {
   W: 'border-emerald-500/40 text-emerald-300 bg-emerald-500/5',
   L: 'border-rose-500/40 text-rose-300 bg-rose-500/5',
   P: 'border-amber-500/40 text-amber-300 bg-amber-500/5',
-  ['-']: 'border-zinc-700 text-zinc-400',
+  '-': 'border-zinc-700 text-zinc-400',
 };
 const OUTCOME_PENDING: Outcome = '-';
 
