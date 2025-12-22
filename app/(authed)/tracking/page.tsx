@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { formatGameLabel } from '@/lib/formatGameLabel';
+import { getTeamLogoUrl } from '@/lib/logos';
 
 type AiPick = {
   id: number;
@@ -83,7 +84,7 @@ const outcomeBadgeStyles: Record<Outcome, string> = {
 
 function computeOutcome(pick: AiPick, game?: GameRow | null): Outcome {
   const score = scoreSnapshot(game);
-  if (score.home == null || score.away == null || pick.line_or_total == null) return '—';
+  if (score.home == null || score.away == null || pick.line_or_total == null) return '-';
 
   if (pick.pick_type === 'spread') {
     const team = toShort(pick.team_short ?? pick.recommendation);
@@ -110,7 +111,6 @@ function computeOutcome(pick: AiPick, game?: GameRow | null): Outcome {
 
 export default function TrackingPage() {
   const router = useRouter();
-  const [week, setWeek] = useState<number>(1);
   const [checkingAdmin, setCheckingAdmin] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
 
@@ -140,14 +140,6 @@ export default function TrackingPage() {
       if (!ok) router.replace('/');
     })();
   }, [router]);
-
-  // bootstrap week from current_open_week once
-  useEffect(() => {
-    (async () => {
-      const { data } = await supabase.from('current_open_week').select('week_id').maybeSingle();
-      if (data?.week_id) setWeek(Number(data.week_id));
-    })();
-  }, []);
 
   // load full season of picks
   useEffect(() => {
@@ -331,32 +323,76 @@ export default function TrackingPage() {
     })();
   }, [seasonPicks, isAdmin]);
 
-
-  const weeklyPicks = useMemo(() => {
-    return seasonPicks.filter((pick) => pick.week_number === week);
-  }, [seasonPicks, week]);
-
   const decorated = useMemo(() => {
-    return weeklyPicks.map((p) => {
+    const sorted = [...seasonPicks].sort((a, b) => {
+      if (a.week_number === b.week_number) return a.id - b.id;
+      return a.week_number - b.week_number;
+    });
+    return sorted.map((p) => {
       const game = games.get(p.game_id) ?? null;
-      const rec = toShort(p.recommendation ?? '');
-      const homeTeam = toShort(game?.home) || toShort(p.home_short) || '—';
-      const awayTeam = toShort(game?.away) || toShort(p.away_short) || '—';
+      const rec = (p.recommendation ?? '').toString().trim();
+      const homeTeamShort = toShort(game?.home) || toShort(p.home_short) || '-';
+      const awayTeamShort = toShort(game?.away) || toShort(p.away_short) || '-';
       const score = scoreSnapshot(game);
       const hasFinal = game?.home_score != null && game?.away_score != null;
-      const result = hasFinal ? computeOutcome(p, game) : '—';
+      const result = hasFinal ? computeOutcome(p, game) : '-';
       const confidenceText =
         typeof p.confidence === 'number' ? formatPercent(p.confidence) : null;
+
+      const numericLine =
+        p.line_or_total != null
+          ? p.pick_type === 'spread' && p.line_or_total > 0
+            ? `+${p.line_or_total}`
+            : `${p.line_or_total}`
+          : '';
+      const baseDescriptor =
+        p.pick_type === 'spread'
+          ? (rec || p.team_short || '').trim()
+          : (p.ou_side || rec || '').toString().trim();
+      const descriptorIncludesLine =
+        baseDescriptor && numericLine ? baseDescriptor.includes(`${p.line_or_total}`) : false;
+      const descriptor =
+        numericLine && !descriptorIncludesLine
+          ? `${baseDescriptor} ${numericLine}`.trim()
+          : (baseDescriptor || numericLine).trim() || 'N/A';
+
+      const matchupLabel = formatGameLabel(awayTeamShort || '-', homeTeamShort || '-');
+      const confidenceDisplay = confidenceText ? ` (${confidenceText})` : '';
+      const leftLabel =
+        p.pick_type === 'ou'
+          ? `Week ${p.week_number} - ${matchupLabel} ${descriptor}${confidenceDisplay}`.trim()
+          : `Week ${p.week_number} - ${descriptor}${confidenceDisplay}`.trim();
+
+      const scoreText =
+        score.away != null && score.home != null ? `${score.away} - ${score.home}` : score.text;
+
       return {
         ...p,
-        matchup: formatGameLabel(awayTeam, homeTeam),
-        score: score.text,
+        matchup: matchupLabel,
+        score: scoreText,
         recommendationText: rec,
         outcome: result,
         confidenceText,
+        descriptor,
+        homeTeamShort,
+        awayTeamShort,
+        leftLabel,
+        homeLogo: getTeamLogoUrl(homeTeamShort),
+        awayLogo: getTeamLogoUrl(awayTeamShort),
       };
     });
-  }, [weeklyPicks, games]);
+  }, [seasonPicks, games]);
+
+  const picksByWeek = useMemo(() => {
+    const grouped = new Map<number, typeof decorated>();
+    for (const pick of decorated) {
+      if (!grouped.has(pick.week_number)) grouped.set(pick.week_number, []);
+      grouped.get(pick.week_number)!.push(pick);
+    }
+    return Array.from(grouped.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([weekNumber, picks]) => ({ weekNumber, picks }));
+  }, [decorated]);
 
   const seasonSummary = useMemo<SeasonSummary>(() => {
     let wins = 0;
@@ -383,86 +419,76 @@ export default function TrackingPage() {
       <header className="space-y-1">
         <h1 className="text-xl font-semibold">Dave1290 AI Tracking</h1>
         <p className="text-sm text-zinc-400">
-          Read-only log of Dave’s weekly recommendations. This page never influences the live draft
+          Read-only log of Dave's weekly recommendations. This page never influences the live draft
           or scoring.
         </p>
       </header>
 
-      <div className="flex gap-3 items-center">
-        <select
-          aria-label="Week selector"
-          className="border bg-zinc-900 p-1 rounded"
-          value={week}
-          onChange={(e) => setWeek(Number(e.target.value))}
-        >
-          {Array.from({ length: 18 }).map((_, idx) => (
-            <option key={idx + 1} value={idx + 1}>
-              Week {idx + 1}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      <section className="border rounded p-4 space-y-2">
+      <section className="border rounded p-4 space-y-3">
         <h2 className="text-lg font-medium">AI Season Summary ({YEAR})</h2>
-        <div className="grid grid-cols-2 gap-2 text-sm text-zinc-300">
-          <div>Wins: {seasonSummary.wins}</div>
-          <div>Losses: {seasonSummary.losses}</div>
-          <div>Pushes: {seasonSummary.pushes}</div>
-          <div>
-            Win %:{' '}
-            {seasonSummary.winPct != null ? formatPercent(seasonSummary.winPct) : '—'}
+        <div className="flex flex-wrap items-center gap-4 text-sm text-zinc-300">
+          <div className="flex-1 min-w-[140px]">Wins: {seasonSummary.wins}</div>
+          <div className="flex-1 min-w-[140px]">Losses: {seasonSummary.losses}</div>
+          <div className="flex-1 min-w-[140px]">Pushes: {seasonSummary.pushes}</div>
+          <div className="flex-1 min-w-[140px]">
+            Win %: {seasonSummary.winPct != null ? formatPercent(seasonSummary.winPct) : '-'}
           </div>
         </div>
       </section>
 
-      <section className="border rounded p-4 space-y-3">
+      <section className="border rounded p-4 space-y-4">
         <h2 className="text-lg font-medium">Weekly Picks</h2>
-        <div className="text-xs text-zinc-500">Loaded {decorated.length} picks for Week {week}.</div>
-        {decorated.length === 0 ? (
-          <p className="text-sm text-zinc-400">No picks logged for Week {week}.</p>
+        {picksByWeek.length === 0 ? (
+          <p className="text-sm text-zinc-400">No picks logged for this season.</p>
         ) : (
-          <ul className="divide-y divide-zinc-800">
-            {decorated.map((p) => {
-              const numericLine =
-                p.line_or_total != null
-                  ? p.pick_type === 'spread' && p.line_or_total > 0
-                    ? `+${p.line_or_total}`
-                    : `${p.line_or_total}`
-                  : '';
-              const baseDescriptor =
-                p.pick_type === 'spread'
-                  ? toShort(p.team_short) || p.recommendationText
-                  : toShort(p.ou_side) || p.recommendationText;
-              const descriptorIncludesLine =
-                baseDescriptor && numericLine
-                  ? baseDescriptor.includes(`${p.line_or_total}`)
-                  : false;
-              const descriptor =
-                numericLine && !descriptorIncludesLine
-                  ? `${baseDescriptor || ''} ${numericLine}`.trim()
-                  : baseDescriptor?.trim() || numericLine;
-              const labelPrefix = p.pick_type === 'spread' ? 'SPREAD' : 'OU';
-              const pickLabel = `${labelPrefix} — ${descriptor || 'N/A'}`;
-              return (
-                <li key={p.id} className="py-3 text-sm space-y-1.5">
-                  <div className="font-semibold">{p.matchup}</div>
-                  <div className="text-zinc-400 text-xs">Score: {p.score}</div>
-                  <div className="text-zinc-300">{pickLabel}</div>
-                  {p.confidenceText ? (
-                    <div className="text-xs text-zinc-400">Confidence: {p.confidenceText}</div>
-                  ) : null}
-                  <div>
-                    <span
-                      className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-semibold ${outcomeBadgeStyles[p.outcome]}`}
-                    >
-                      {p.outcome}
-                    </span>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+          <div className="space-y-6">
+            {picksByWeek.map(({ weekNumber, picks }) => (
+              <div key={weekNumber} className="space-y-2">
+                <div className="text-sm font-semibold text-zinc-200">Week {weekNumber}</div>
+                <ul className="divide-y divide-zinc-800">
+                  {picks.map((p) => (
+                    <li key={p.id} className="py-3">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="flex-1 min-w-[220px] text-sm text-zinc-100 leading-snug">
+                          {p.leftLabel}
+                        </div>
+                        <div className="flex-1 min-w-[180px] flex items-center justify-center gap-2 text-sm text-zinc-300">
+                          {p.awayLogo ? (
+                            <img
+                              src={p.awayLogo}
+                              alt={p.awayTeamShort}
+                              className="w-6 h-6 rounded-sm object-contain"
+                              loading="eager"
+                            />
+                          ) : (
+                            <span className="w-6 h-6" />
+                          )}
+                          <span className="tabular-nums">{p.score}</span>
+                          {p.homeLogo ? (
+                            <img
+                              src={p.homeLogo}
+                              alt={p.homeTeamShort}
+                              className="w-6 h-6 rounded-sm object-contain"
+                              loading="eager"
+                            />
+                          ) : (
+                            <span className="w-6 h-6" />
+                          )}
+                        </div>
+                        <div className="flex-none ml-auto">
+                          <span
+                            className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-semibold ${outcomeBadgeStyles[p.outcome]}`}
+                          >
+                            {p.outcome}
+                          </span>
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
         )}
       </section>
     </div>
