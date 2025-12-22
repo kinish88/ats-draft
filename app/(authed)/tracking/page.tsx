@@ -79,7 +79,7 @@ const outcomeBadgeStyles: Record<Outcome, string> = {
   W: 'border-emerald-500/40 text-emerald-300 bg-emerald-500/5',
   L: 'border-rose-500/40 text-rose-300 bg-rose-500/5',
   P: 'border-amber-500/40 text-amber-300 bg-amber-500/5',
-  '-': 'border-zinc-700 text-zinc-400',
+  ['-']: 'border-zinc-700 text-zinc-400',
 };
 const OUTCOME_PENDING: Outcome = '-';
 
