@@ -108,7 +108,7 @@ function computeOutcome(pick: AiPick, game?: GameRow | null): Outcome {
   if (total === pick.line_or_total) return 'P';
   if (side === 'OVER') return total > pick.line_or_total ? 'W' : 'L';
   if (side === 'UNDER') return total < pick.line_or_total ? 'W' : 'L';
-  return '—';
+  return OUTCOME_PENDING;
 }
 
 export default function TrackingPage() {
