@@ -817,6 +817,53 @@ export default function ScoreboardPage() {
     return { wins, losses, pushes, winPct };
   }, [mySpreadPicks, myOuPicks, myGamesByPair]);
 
+  const myTeamLeaders = useMemo(() => {
+    const map = new Map<string, { picks: number; wins: number; losses: number; pushes: number }>();
+    for (const p of mySpreadPicks) {
+      const team = p.team_short?.trim().toUpperCase();
+      if (!team) continue;
+      const pairKey = `${p.home_short}-${p.away_short}`;
+      const outcome = pickOutcomeATS(myGamesByPair.get(pairKey), p.team_short, p.spread);
+      const entry = map.get(team) ?? { picks: 0, wins: 0, losses: 0, pushes: 0 };
+      entry.picks += 1;
+      if (outcome === 'win') entry.wins += 1;
+      else if (outcome === 'loss') entry.losses += 1;
+      else if (outcome === 'push') entry.pushes += 1;
+      map.set(team, entry);
+    }
+
+    const topBy = (prop: 'picks' | 'wins' | 'losses') => {
+      let best: { team: string; data: { picks: number; wins: number; losses: number; pushes: number } } | null = null;
+      for (const [team, data] of map.entries()) {
+        if (!best || data[prop] > best.data[prop]) best = { team, data };
+      }
+      return best;
+    };
+
+    const shape = (item: ReturnType<typeof topBy>) => {
+      if (!item) return null;
+      const total = item.data.wins + item.data.losses + item.data.pushes;
+      const winPct = total ? (item.data.wins / total) * 100 : null;
+      const lossPct = total ? (item.data.losses / total) * 100 : null;
+      return {
+        team: item.team,
+        picks: item.data.picks,
+        wins: item.data.wins,
+        losses: item.data.losses,
+        pushes: item.data.pushes,
+        winPct,
+        lossPct,
+        logo: teamLogo(item.team),
+      };
+    };
+
+    return {
+      mostPicked: shape(topBy('picks')),
+      mostWins: shape(topBy('wins')),
+      mostLosses: shape(topBy('losses')),
+    };
+  }, [mySpreadPicks, myGamesByPair]);
+
   /* -------------------------------- render -------------------------------- */
 
   const resolvedWeek = week ?? (weeks.length ? Math.max(...weeks) : 1);
@@ -887,6 +934,51 @@ export default function ScoreboardPage() {
               <div>Losses: {mySummary.losses}</div>
               <div>Pushes: {mySummary.pushes}</div>
               <div>Win %: {mySummary.winPct != null ? formatPercent(mySummary.winPct) : '-'}</div>
+            </div>
+            <div className="flex flex-wrap items-center gap-4 text-sm text-zinc-200">
+              <span className="text-xs uppercase tracking-wide text-zinc-400">Leaders</span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-zinc-400">Most Picked</span>
+                {myTeamLeaders.mostPicked ? (
+                  <>
+                    <TinyLogo url={myTeamLeaders.mostPicked.logo} alt={myTeamLeaders.mostPicked.team} className="w-5 h-5 mr-0" />
+                    <span>{myTeamLeaders.mostPicked.team}</span>
+                    <span className="text-xs text-zinc-400">
+                      ({myTeamLeaders.mostPicked.picks} picks, {myTeamLeaders.mostPicked.winPct != null ? formatPercent(myTeamLeaders.mostPicked.winPct) : '0%'} W%)
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-xs text-zinc-500">-</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-emerald-300">Top Winner</span>
+                {myTeamLeaders.mostWins ? (
+                  <>
+                    <TinyLogo url={myTeamLeaders.mostWins.logo} alt={myTeamLeaders.mostWins.team} className="w-5 h-5 mr-0" />
+                    <span>{myTeamLeaders.mostWins.team}</span>
+                    <span className="text-xs text-zinc-400">
+                      ({myTeamLeaders.mostWins.wins} W, {myTeamLeaders.mostWins.winPct != null ? formatPercent(myTeamLeaders.mostWins.winPct) : '0%'} W%)
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-xs text-zinc-500">-</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-rose-300">Top Loser</span>
+                {myTeamLeaders.mostLosses ? (
+                  <>
+                    <TinyLogo url={myTeamLeaders.mostLosses.logo} alt={myTeamLeaders.mostLosses.team} className="w-5 h-5 mr-0" />
+                    <span>{myTeamLeaders.mostLosses.team}</span>
+                    <span className="text-xs text-zinc-400">
+                      ({myTeamLeaders.mostLosses.losses} L, {myTeamLeaders.mostLosses.lossPct != null ? formatPercent(myTeamLeaders.mostLosses.lossPct) : '0%'} L%)
+                    </span>
+                  </>
+                ) : (
+                  <span className="text-xs text-zinc-500">-</span>
+                )}
+              </div>
             </div>
           </section>
 
