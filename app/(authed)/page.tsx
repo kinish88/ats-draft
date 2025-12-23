@@ -60,6 +60,7 @@ type SpreadPickRow = {
   spread: number | null;  // signed line for picked team
   home_short: string;
   away_short: string;
+  week_id?: number;
 };
 
 type OuPickRow = {
@@ -68,6 +69,7 @@ type OuPickRow = {
   away_short: string;
   ou_choice: 'OVER' | 'UNDER';
   ou_total: number;
+  week_id?: number;
 };
 
 /* --------------------------------- config -------------------------------- */
@@ -85,6 +87,10 @@ function toStr(x: unknown, fallback = ''): string {
 function toBoolOrNull(x: unknown): boolean | null {
   if (typeof x === 'boolean') return x;
   return null;
+}
+function formatPercent(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded}%` : `${rounded.toFixed(1)}%`;
 }
 function signed(n: number | null | undefined): string {
   if (n === null || n === undefined) return '';
@@ -223,11 +229,40 @@ export default function ScoreboardPage() {
   const [games, setGames] = useState<GameRow[]>([]);
   const [spreadPicks, setSpreadPicks] = useState<SpreadPickRow[]>([]);
   const [ouPicks, setOuPicks] = useState<OuPickRow[]>([]);
-  const [showBoard, setShowBoard] = useState(false);
+  const [showMyPicks, setShowMyPicks] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [myLoading, setMyLoading] = useState(false);
+  const [userDisplayName, setUserDisplayName] = useState<string | null>(null);
+  const [mySpreadPicks, setMySpreadPicks] = useState<SpreadPickRow[]>([]);
+  const [myOuPicks, setMyOuPicks] = useState<OuPickRow[]>([]);
+  const [myGamesByPair, setMyGamesByPair] = useState<Map<string, GameRow>>(new Map());
 
   // NEW: block loadWeeks() from overwriting a week restored from URL/localStorage
   const initWeekRef = useRef(false);
+
+  // Resolve signed-in display name for "My Picks"
+  useEffect(() => {
+    (async () => {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const email = sessionData?.session?.user?.email?.toLowerCase() ?? null;
+      if (!email) return;
+      const { data } = await supabase
+        .from('players')
+        .select('display_name')
+        .eq('email', email)
+        .maybeSingle();
+      const fromDb = typeof data?.display_name === 'string' ? data.display_name : null;
+      const fallback =
+        (sessionData?.session?.user?.user_metadata as Record<string, unknown> | undefined)
+          ?.full_name;
+      const resolved =
+        fromDb ||
+        (typeof fallback === 'string' ? fallback : null) ||
+        sessionData?.session?.user?.email ||
+        null;
+      setUserDisplayName(resolved);
+    })();
+  }, []);
 
   /* ------------------------------ load weeks ------------------------------ */
 
@@ -424,6 +459,131 @@ export default function ScoreboardPage() {
     if (week != null) loadAll(week);
   }, [week]);
 
+  // Load full-season picks for the signed-in user when requested
+  useEffect(() => {
+    if (!showMyPicks || !userDisplayName) return;
+    let cancelled = false;
+
+    const loadMySeason = async () => {
+      setMyLoading(true);
+      try {
+        const weeksToUse =
+          weeks.length > 0 ? weeks : Array.from({ length: 18 }, (_, i) => i + 1);
+
+        // Spread picks for this user across the season
+        const { data: sp } = await supabase
+          .from('picks')
+          .select(
+            'week_id, pick_number, player_display_name, team_short, spread_at_pick, home_short, away_short'
+          )
+          .eq('season_year', YEAR)
+          .eq('player_display_name', userDisplayName)
+          .order('week_id', { ascending: true })
+          .order('pick_number', { ascending: true });
+
+        type PicksSelectRow = {
+          week_id?: unknown;
+          pick_number?: unknown;
+          player_display_name?: unknown;
+          team_short?: unknown;
+          spread_at_pick?: unknown;
+          home_short?: unknown;
+          away_short?: unknown;
+        };
+
+        const mySpreads: SpreadPickRow[] = (Array.isArray(sp) ? (sp as unknown[]) : []).map(
+          (r) => {
+            const x = r as PicksSelectRow;
+            return {
+              week_id: toNumOrNull(x.week_id) ?? undefined,
+              pick_number: toNumOrNull(x.pick_number) ?? 0,
+              player_display_name: toStr(x.player_display_name),
+              team_short: toStr(x.team_short),
+              spread: toNumOrNull(x.spread_at_pick),
+              home_short: toStr(x.home_short),
+              away_short: toStr(x.away_short),
+            };
+          }
+        );
+
+        // O/U picks for this user across the season (per-week RPC)
+        const ouList: OuPickRow[] = [];
+        const normalizedUser = userDisplayName.trim().toLowerCase();
+        for (const w of weeksToUse) {
+          const { data: ou } = await supabase.rpc('get_week_ou_picks_admin', {
+            p_year: YEAR,
+            p_week: w,
+          });
+          const ouArr = Array.isArray(ou) ? (ou as unknown[]) : [];
+          for (const r of ouArr) {
+            const x = r as AdminOuRowUnknown;
+            const playerName = toStr(x.player);
+            if (!playerName || playerName.trim().toLowerCase() !== normalizedUser) continue;
+            const sideRaw = toStr(x.pick_side).trim().toUpperCase();
+            const side: 'OVER' | 'UNDER' = sideRaw === 'UNDER' ? 'UNDER' : 'OVER';
+            ouList.push({
+              week_id: w,
+              player_display_name: playerName,
+              home_short: toStr(x.home_short),
+              away_short: toStr(x.away_short),
+              ou_choice: side,
+              ou_total: toNumOrNull(x.total_at_pick) ?? 0,
+            });
+          }
+        }
+
+        // Load games for any weeks that have picks (for outcomes)
+        const weeksWithPicks = new Set<number>();
+        for (const p of mySpreads) if (typeof p.week_id === 'number') weeksWithPicks.add(p.week_id);
+        for (const p of ouList) if (typeof p.week_id === 'number') weeksWithPicks.add(p.week_id);
+
+        const gamesMap = new Map<string, GameRow>();
+        for (const w of weeksWithPicks) {
+          const { data: base } = await supabase.rpc('get_week_games_for_scoring', {
+            p_year: YEAR,
+            p_week: w,
+          });
+          const baseArr = Array.isArray(base) ? (base as unknown[]) : [];
+          for (const r of baseArr) {
+            const row = r as RpcBaseGameRowUnknown;
+            const id = toNumOrNull(row.game_id);
+            const home = toStr(row.home);
+            const away = toStr(row.away);
+            const hs = toNumOrNull(row.home_score);
+            const as = toNumOrNull(row.away_score);
+            if (id == null || !home || !away) continue;
+            const g: GameRow = {
+              id,
+              home,
+              away,
+              home_score: hs,
+              away_score: as,
+              live_home_score: null,
+              live_away_score: null,
+              is_final: hs != null && as != null ? true : null,
+              is_live: null,
+            };
+            gamesMap.set(`${home}-${away}`, g);
+          }
+        }
+
+        if (!cancelled) {
+          setMySpreadPicks(mySpreads);
+          setMyOuPicks(ouList);
+          setMyGamesByPair(gamesMap);
+        }
+      } finally {
+        if (!cancelled) setMyLoading(false);
+      }
+    };
+
+    loadMySeason();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showMyPicks, userDisplayName, weeks]);
+
   /* ------------------------------ realtime live --------------------------- */
 
   // keep a stable Set of the game IDs currently on screen
@@ -610,6 +770,53 @@ export default function ScoreboardPage() {
     return m;
   }, [ouPicks]);
 
+  const myWeeksGrouped = useMemo(() => {
+    const grouped = new Map<number, { spreads: SpreadPickRow[]; ous: OuPickRow[] }>();
+    for (const p of mySpreadPicks) {
+      const w = p.week_id ?? 0;
+      if (!grouped.has(w)) grouped.set(w, { spreads: [], ous: [] });
+      grouped.get(w)!.spreads.push(p);
+    }
+    for (const p of myOuPicks) {
+      const w = p.week_id ?? 0;
+      if (!grouped.has(w)) grouped.set(w, { spreads: [], ous: [] });
+      grouped.get(w)!.ous.push(p);
+    }
+    return Array.from(grouped.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([weekNumber, data]) => ({
+        weekNumber,
+        spreads: data.spreads.sort((a, b) => (a.pick_number ?? 0) - (b.pick_number ?? 0)),
+        ous: data.ous,
+      }));
+  }, [mySpreadPicks, myOuPicks]);
+
+  const mySummary = useMemo(() => {
+    let wins = 0;
+    let losses = 0;
+    let pushes = 0;
+
+    for (const p of mySpreadPicks) {
+      const pairKey = `${p.home_short}-${p.away_short}`;
+      const outcome = pickOutcomeATS(myGamesByPair.get(pairKey), p.team_short, p.spread);
+      if (outcome === 'win') wins += 1;
+      else if (outcome === 'loss') losses += 1;
+      else if (outcome === 'push') pushes += 1;
+    }
+
+    for (const p of myOuPicks) {
+      const pairKey = `${p.home_short}-${p.away_short}`;
+      const outcome = pickOutcomeOU(myGamesByPair.get(pairKey), p.ou_choice, p.ou_total);
+      if (outcome === 'win') wins += 1;
+      else if (outcome === 'loss') losses += 1;
+      else if (outcome === 'push') pushes += 1;
+    }
+
+    const counted = wins + losses + pushes;
+    const winPct = counted ? (wins / counted) * 100 : null;
+    return { wins, losses, pushes, winPct };
+  }, [mySpreadPicks, myOuPicks, myGamesByPair]);
+
   /* -------------------------------- render -------------------------------- */
 
   const resolvedWeek = week ?? (weeks.length ? Math.max(...weeks) : 1);
@@ -634,12 +841,19 @@ export default function ScoreboardPage() {
     },
     {
       type: 'toggle',
-      label: 'All Games',
-      ariaLabel: 'Toggle showing all games',
-      checked: showBoard,
-      onChange: (next) => setShowBoard(next),
+      label: 'My Picks (season)',
+      ariaLabel: 'Show only my picks for the season',
+      checked: showMyPicks,
+      onChange: (next) => setShowMyPicks(next),
     },
   ];
+  if (userDisplayName) {
+    controlItems.push({
+      type: 'text',
+      text: `Signed in as ${userDisplayName}`,
+      className: 'text-xs sm:text-sm',
+    });
+  }
 
   return (
     <div className="max-w-5xl mx-auto p-6 space-y-6">
@@ -664,129 +878,195 @@ export default function ScoreboardPage() {
 
       <ControlBar items={controlItems} />
 
-      {/* ------------------------------- PICKS ------------------------------- */}
-      <section className="space-y-3">
-        <h2 className="text-lg font-medium">Picks</h2>
+      {showMyPicks ? (
+        <>
+          <section className="border rounded p-4 space-y-2">
+            <h2 className="text-lg font-medium">My Season Summary</h2>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm text-zinc-200">
+              <div>Wins: {mySummary.wins}</div>
+              <div>Losses: {mySummary.losses}</div>
+              <div>Pushes: {mySummary.pushes}</div>
+              <div>Win %: {mySummary.winPct != null ? formatPercent(mySummary.winPct) : '-'}</div>
+            </div>
+          </section>
 
-        {loading ? (
-          <div className="text-sm text-zinc-400">Loading…</div>
-        ) : (
-          (PLAYERS_ORDERED as readonly string[]).map((player) => {
-            const rows = picksByPlayer.get(player) ?? [];
-            const ouPick = ouByPlayer.get(player) || null;
-            return (
-              <div key={player} className="border rounded p-4">
-                <div className="font-semibold mb-3">{player}</div>
+          <section className="space-y-3">
+            <h2 className="text-lg font-medium">My Picks (Season)</h2>
+            {myLoading ? (
+              <div className="text-sm text-zinc-400">Loading your picks.</div>
+            ) : myWeeksGrouped.length === 0 ? (
+              <div className="text-sm text-zinc-400">No picks found for this season.</div>
+            ) : (
+              myWeeksGrouped.map(({ weekNumber, spreads, ous }) => (
+                <div key={weekNumber} className="border rounded p-4 space-y-3">
+                  <div className="font-semibold text-sm text-zinc-200">Week {weekNumber}</div>
+                  {spreads.length === 0 && ous.length === 0 ? (
+                    <div className="text-sm text-zinc-400">No picks logged.</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {spreads.map((r, idx) => {
+                        const pairKey = `${r.home_short}-${r.away_short}`;
+                        const g = myGamesByPair.get(pairKey);
+                        const outcome = pickOutcomeATS(g, r.team_short, r.spread);
+                        const s = scoreParts(g);
+                        const scoreText =
+                          s.away == null || s.home == null ? '- -' : `${s.away}-${s.home}`;
+                        const scoreClass =
+                          s.isLive ? 'score-live' : s.isFinal ? 'score-final' : 'text-zinc-300';
 
-                {rows.length === 0 && !ouPick ? (
-                  <div className="text-sm text-zinc-400">No picks</div>
-                ) : (
-                  <div className="space-y-3">
-                    {rows.map((r, idx) => {
-                      const pairKey = `${r.home_short}-${r.away_short}`;
-                      const g = gameByPair.get(pairKey);
-                      const outcome = pickOutcomeATS(g, r.team_short, r.spread);
-                      const s = scoreParts(g);
-                      const scoreText =
-                        s.away == null || s.home == null ? '- -' : `${s.away}-${s.home}`;
-                      const scoreClass =
-                        s.isLive ? 'score-live' : s.isFinal ? 'score-final' : 'text-zinc-300';
-
-                      return (
-                        <div
-                          key={`${player}-${idx}`}
-                          className="flex flex-col gap-1 border border-zinc-800/60 rounded p-2"
-                        >
-                          <div className="flex items-center justify-between gap-3">
-                            <div className="flex items-center gap-2">
-                              <TinyLogo url={teamLogo(r.team_short)} alt={r.team_short} />
-                              <span className="font-semibold">{r.team_short}</span>
-                              <span className="text-sm text-zinc-400">{signed(r.spread)}</span>
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <div className="flex items-center gap-2 text-sm text-zinc-300">
-                                <TinyLogo url={teamLogo(r.away_short)} alt={r.away_short} />
-                                <span className={`tabular-nums ${scoreClass}`}>{scoreText}</span>
-                                <TinyLogo url={teamLogo(r.home_short)} alt={r.home_short} />
+                        return (
+                          <div
+                            key={`${weekNumber}-${idx}`}
+                            className="flex flex-col gap-1 border border-zinc-800/60 rounded p-2"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-2">
+                                <TinyLogo url={teamLogo(r.team_short)} alt={r.team_short} />
+                                <span className="font-semibold">{r.team_short}</span>
+                                <span className="text-sm text-zinc-400">{signed(r.spread)}</span>
                               </div>
-                              <StatusPill outcome={outcome} />
+                              <div className="flex items-center gap-3">
+                                <div className="flex items-center gap-2 text-sm text-zinc-300">
+                                  <TinyLogo url={teamLogo(r.away_short)} alt={r.away_short} />
+                                  <span className={`tabular-nums ${scoreClass}`}>{scoreText}</span>
+                                  <TinyLogo url={teamLogo(r.home_short)} alt={r.home_short} />
+                                </div>
+                                <StatusPill outcome={outcome} />
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
 
-                    {ouPick
-                      ? (() => {
-                          const pairKey = `${ouPick.home_short}-${ouPick.away_short}`;
-                          const g = gameByPair.get(pairKey);
-                          const outcome = pickOutcomeOU(g, ouPick.ou_choice, ouPick.ou_total);
-                          const s = scoreParts(g);
-                          const scoreText =
-                            s.away == null || s.home == null ? '- -' : `${s.away}-${s.home}`;
-                          const scoreClass =
-                            s.isLive ? 'score-live' : s.isFinal ? 'score-final' : 'text-zinc-300';
-                          return (
-                            <div className="border-t border-zinc-800/60 pt-2">
-                              <div className="text-xs italic text-zinc-400 mb-1">Over / Under</div>
-                              <div className="flex items-center justify-between gap-3">
-                                <div className="flex items-center gap-2 text-sm text-zinc-300">
-                                  <TinyLogo url={teamLogo(ouPick.away_short)} alt={ouPick.away_short} />
-                                  <span className={`tabular-nums ${scoreClass}`}>{scoreText}</span>
-                                  <TinyLogo url={teamLogo(ouPick.home_short)} alt={ouPick.home_short} />
-                                </div>
-                                <div className="flex items-center gap-3">
-                                  <span className="font-semibold text-sm">
-                                    {`${ouPick.ou_choice} ${ouPick.ou_total}`}
-                                  </span>
-                                  <StatusPill outcome={outcome} />
-                                </div>
+                      {ous.map((ouPick, idx) => {
+                        const pairKey = `${ouPick.home_short}-${ouPick.away_short}`;
+                        const g = myGamesByPair.get(pairKey);
+                        const outcome = pickOutcomeOU(g, ouPick.ou_choice, ouPick.ou_total);
+                        const s = scoreParts(g);
+                        const scoreText =
+                          s.away == null || s.home == null ? '- -' : `${s.away}-${s.home}`;
+                        const scoreClass =
+                          s.isLive ? 'score-live' : s.isFinal ? 'score-final' : 'text-zinc-300';
+                        return (
+                          <div
+                            key={`ou-${weekNumber}-${idx}`}
+                            className="border-t border-zinc-800/60 pt-2"
+                          >
+                            <div className="text-xs italic text-zinc-400 mb-1">Over / Under</div>
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-2 text-sm text-zinc-300">
+                                <TinyLogo url={teamLogo(ouPick.away_short)} alt={ouPick.away_short} />
+                                <span className={`tabular-nums ${scoreClass}`}>{scoreText}</span>
+                                <TinyLogo url={teamLogo(ouPick.home_short)} alt={ouPick.home_short} />
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <span className="font-semibold text-sm">
+                                  {`${ouPick.ou_choice} ${ouPick.ou_total}`}
+                                </span>
+                                <StatusPill outcome={outcome} />
                               </div>
                             </div>
-                          );
-                        })()
-                      : null}
-                  </div>
-                )}
-              </div>
-            );
-          })
-        )}
-      </section>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ))
+            )}
+          </section>
+        </>
+      ) : (
+        <section className="space-y-3">
+          <h2 className="text-lg font-medium">Picks</h2>
 
-      {/* --------------------------- FULL SCOREBOARD --------------------------- */}
-      {showBoard && (
-        <section className="space-y-2">
-          <h2 className="text-lg font-medium">All Games</h2>
-          {games.length === 0 ? (
-            <div className="text-sm text-zinc-400">No games</div>
+          {loading ? (
+            <div className="text-sm text-zinc-400">Loading.</div>
           ) : (
-            games.map((g) => {
-              const s = scoreInfo(g);
-              const matchupLabel = formatGameLabel(g.away, g.home);
+            (PLAYERS_ORDERED as readonly string[]).map((player) => {
+              const rows = picksByPlayer.get(player) ?? [];
+              const ouPick = ouByPlayer.get(player) || null;
               return (
-                <div
-                  key={g.id}
-                  className="border rounded p-2 flex items-center justify-between"
-                >
-                  <div className="flex items-center gap-2">
-                    <TinyLogo url={teamLogo(g.away)} alt={g.away} />
-                    <TinyLogo url={teamLogo(g.home)} alt={g.home} />
-                    <span className="text-sm text-zinc-300">{matchupLabel}</span>
-                  </div>
-                  <div
-                    className={`tabular-nums ${
-                      s.isLive ? 'score-live' : s.isFinal ? 'score-final' : ''
-                    }`}
-                  >
-                    {s.text}
-                  </div>
+                <div key={player} className="border rounded p-4">
+                  <div className="font-semibold mb-3">{player}</div>
+
+                  {rows.length === 0 && !ouPick ? (
+                    <div className="text-sm text-zinc-400">No picks</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {rows.map((r, idx) => {
+                        const pairKey = `${r.home_short}-${r.away_short}`;
+                        const g = gameByPair.get(pairKey);
+                        const outcome = pickOutcomeATS(g, r.team_short, r.spread);
+                        const s = scoreParts(g);
+                        const scoreText =
+                          s.away == null || s.home == null ? '- -' : `${s.away}-${s.home}`;
+                        const scoreClass =
+                          s.isLive ? 'score-live' : s.isFinal ? 'score-final' : 'text-zinc-300';
+
+                        return (
+                          <div
+                            key={`${player}-${idx}`}
+                            className="flex flex-col gap-1 border border-zinc-800/60 rounded p-2"
+                          >
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-2">
+                                <TinyLogo url={teamLogo(r.team_short)} alt={r.team_short} />
+                                <span className="font-semibold">{r.team_short}</span>
+                                <span className="text-sm text-zinc-400">{signed(r.spread)}</span>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <div className="flex items-center gap-2 text-sm text-zinc-300">
+                                  <TinyLogo url={teamLogo(r.away_short)} alt={r.away_short} />
+                                  <span className={`tabular-nums ${scoreClass}`}>{scoreText}</span>
+                                  <TinyLogo url={teamLogo(r.home_short)} alt={r.home_short} />
+                                </div>
+                                <StatusPill outcome={outcome} />
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {ouPick
+                        ? (() => {
+                            const pairKey = `${ouPick.home_short}-${ouPick.away_short}`;
+                            const g = gameByPair.get(pairKey);
+                            const outcome = pickOutcomeOU(g, ouPick.ou_choice, ouPick.ou_total);
+                            const s = scoreParts(g);
+                            const scoreText =
+                              s.away == null || s.home == null ? '- -' : `${s.away}-${s.home}`;
+                            const scoreClass =
+                              s.isLive ? 'score-live' : s.isFinal ? 'score-final' : 'text-zinc-300';
+                            return (
+                              <div className="border-t border-zinc-800/60 pt-2">
+                                <div className="text-xs italic text-zinc-400 mb-1">Over / Under</div>
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="flex items-center gap-2 text-sm text-zinc-300">
+                                    <TinyLogo url={teamLogo(ouPick.away_short)} alt={ouPick.away_short} />
+                                    <span className={`tabular-nums ${scoreClass}`}>{scoreText}</span>
+                                    <TinyLogo url={teamLogo(ouPick.home_short)} alt={ouPick.home_short} />
+                                  </div>
+                                  <div className="flex items-center gap-3">
+                                    <span className="font-semibold text-sm">
+                                      {`${ouPick.ou_choice} ${ouPick.ou_total}`}
+                                    </span>
+                                    <StatusPill outcome={outcome} />
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()
+                        : null}
+                    </div>
+                  )}
                 </div>
               );
             })
           )}
         </section>
       )}
+
     </div>
   );
 }
