@@ -6,6 +6,7 @@ import { useAppState } from '@/lib/useAppState';
 import { whoIsOnClock, totalAtsPicks, BASE_ORDER, type Player, type Starter } from '@/lib/draftOrder';
 import toast, { Toaster } from 'react-hot-toast';
 import CountdownBanner from '@/src/components/CountdownBanner';
+import { usePushNotifications } from '@/lib/usePushNotifications';
 
 function coerceStarter(s: string | null): Starter {
   return (BASE_ORDER as readonly string[]).includes(s ?? '') ? (s as Starter) : BASE_ORDER[0];
@@ -39,6 +40,7 @@ export default function DraftPage() {
   const [weekNumber, setWeekNumber] = useState<number | null>(null);
   const [starter, setStarter] = useState<string | null>(null);
   const [livePickNumber, setLivePickNumber] = useState<number | null>(null);
+  const { supported: pushSupported, subscribed: pushSubscribed, subscribing: pushSubscribing, subscribe: subscribePush } = usePushNotifications(myName);
   const [board, setBoard] = useState<BoardRow[]>([]);
   const [picks, setPicks] = useState<PickViewRow[]>([]);
   const [myName, setMyName] = useState<string | null>(null);
@@ -169,10 +171,59 @@ export default function DraftPage() {
       <Toaster position="bottom-center" />
       <div className="space-y-3">
         <CountdownBanner className="w-full" />
+
+        {/* ── Live Draft Order Banner ── */}
+        {!draftComplete && (
+          <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+            <div className="text-xs text-zinc-500 uppercase tracking-wide mb-2">
+              {ouPhase ? 'O/U Order' : 'Draft Order'}
+            </div>
+            <div className="flex items-center gap-2">
+              {(ouPhase ? ouOrder : playersR1Names).map((name, i) => {
+                const isOnClock = norm(name) === norm(onClock);
+                const isDone = ouPhase
+                  ? i < ouPicksCount
+                  : i < (livePickNumber ?? spreadPicksCount) % playersR1Names.length && Math.floor((livePickNumber ?? spreadPicksCount) / playersR1Names.length) > Math.floor(i / playersR1Names.length);
+                return (
+                  <div key={name} className="flex items-center gap-2">
+                    {i > 0 && <span className="text-zinc-700">→</span>}
+                    <div className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-sm font-medium border transition-all ${
+                      isOnClock
+                        ? 'border-emerald-400/70 bg-emerald-500/15 text-emerald-200 shadow-[0_0_12px_rgba(16,185,129,0.3)]'
+                        : 'border-white/10 text-zinc-400'
+                    }`}>
+                      {isOnClock && (
+                        <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                      )}
+                      {name}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col gap-2 sm:flex-row sm:items-stretch">
           <DraftStatusPill state={statusState} text={statusText} />
           {lastPickLabel && (<div className="flex-1 rounded-2xl border border-purple-400/30 bg-purple-500/10 px-4 py-3 text-sm font-medium text-purple-100 shadow-inner shadow-black/30 sm:self-start">🟣 Last pick: {lastPickLabel}</div>)}
         </div>
+
+        {/* ── Push Notification opt-in ── */}
+        {pushSupported && !pushSubscribed && myName && (
+          <button
+            onClick={subscribePush}
+            disabled={pushSubscribing}
+            className="w-full rounded-2xl border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm font-medium text-amber-200 hover:bg-amber-500/15 transition disabled:opacity-50"
+          >
+            {pushSubscribing ? '⏳ Setting up…' : '🔔 Enable notifications for your turn'}
+          </button>
+        )}
+        {pushSubscribed && (
+          <div className="rounded-2xl border border-emerald-400/20 bg-emerald-500/5 px-4 py-2 text-xs text-emerald-400 text-center">
+            ✓ Notifications on — you'll be pinged when it's your turn
+          </div>
+        )}
       </div>
       {draftComplete && (<div className="flex items-center justify-center gap-3 py-2 rounded bg-zinc-900/50 border border-zinc-800"><span className="text-emerald-400 font-semibold tracking-wide">🏈 PICKS ARE IN 🏈</span></div>)}
 

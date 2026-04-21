@@ -1,0 +1,18 @@
+{
+  "name": "Against The Spread",
+  "short_name": "ATS",
+  "description": "Weekly ATS draft with BD, PuD & K",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/icon-167.png", "sizes": "167x167", "type": "image/png" },
+    { "src": "/icon-152.png", "sizes": "152x152", "type": "image/png" },
+    { "src": "/icon-120.png", "sizes": "120x120", "type": "image/png" }
+  ]
+}
