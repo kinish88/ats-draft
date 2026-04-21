@@ -1,6 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
+import { useAppState } from '@/lib/useAppState';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
@@ -40,12 +41,12 @@ type AdminOURow = {
 };
 
 /** -------------------- Config -------------------- **/
-const YEAR = 2025;
 
 /** =================================================
  *                 Admin Scores Page
  *  ================================================= */
 export default function AdminScoresPage() {
+  const { season_year: YEAR } = useAppState();
   const router = useRouter();
 
   /** Admin guard */

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useAppState } from '@/lib/useAppState';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { formatGameLabel } from '@/lib/formatGameLabel';
@@ -41,7 +42,6 @@ type SeasonSummary = {
   winPct: number | null;
 };
 
-const YEAR = 2025;
 
 function toShort(value?: string | null) {
   return (value ?? '').trim().toUpperCase();
@@ -112,6 +112,7 @@ function computeOutcome(pick: AiPick, game?: GameRow | null): Outcome {
 }
 
 export default function TrackingPage() {
+  const { season_year: YEAR } = useAppState();
   const router = useRouter();
   const [checkingAdmin, setCheckingAdmin] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);

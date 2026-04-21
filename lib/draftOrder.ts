@@ -6,6 +6,12 @@ export type Phase = 'ats' | 'ou';
 /** Number of ATS rounds per week. Keep it odd to make O/U start as reverse of R1. */
 export const ATS_ROUNDS = 3;
 
+/**
+ * Season 2026: Pud won 2025, so the new base order is Pud → Kinish → Big Dawg.
+ */
+export const BASE_ORDER = ['Pud', 'Kinish', 'Big Dawg'] as const;
+export type Starter = typeof BASE_ORDER[number];
+
 export type DraftState = {
   /** 0-based across *all* picks in the week (ATS first, then O/U). */
   current_pick_number: number;

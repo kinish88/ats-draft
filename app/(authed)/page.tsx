@@ -1,12 +1,12 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useAppState } from '@/lib/useAppState';
 import { supabase } from '@/lib/supabaseClient';
 import { formatGameLabel } from '@/lib/formatGameLabel';
 import { getTeamLogoUrl } from '@/lib/logos';
 import ControlBar, { ControlBarItem } from '@/components/ControlBar';
 
-const YEAR = 2025;
 const PLAYERS_ORDERED = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
 /* ------------------------------- data types ------------------------------- */
@@ -224,6 +224,7 @@ function StatusPill({ outcome }: { outcome: Outcome }) {
 /* --------------------------------- page ---------------------------------- */
 
 export default function ScoreboardPage() {
+  const { season_year: YEAR } = useAppState();
   const [week, setWeek] = useState<number | null>(null);
   const [weeks, setWeeks] = useState<number[]>([]);
   const [games, setGames] = useState<GameRow[]>([]);

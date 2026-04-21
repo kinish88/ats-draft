@@ -1,11 +1,11 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useAppState } from '@/lib/useAppState';
 import { supabase } from '@/lib/supabaseClient';
 
 /* ------------------------------- constants ------------------------------- */
 
-const YEAR = 2025;
 const PLAYERS: readonly string[] = ['Big Dawg', 'Pud', 'Kinish'] as const;
 
 /* --------------------------------- types --------------------------------- */
@@ -77,6 +77,7 @@ function outcomeATS(game: GameRow | undefined, pickedTeamIsHome: boolean, spread
 /* --------------------------------- page ---------------------------------- */
 
 export default function StandingsPage() {
+  const { season_year: YEAR } = useAppState();
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<TableRow[]>([]);
   const [throughWeek, setThroughWeek] = useState<number>(1);
