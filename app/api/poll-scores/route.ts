@@ -1,118 +1,134 @@
+import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabaseAdmin';
-import { formatGameLabel } from '@/lib/formatGameLabel';
 
 export const runtime = 'nodejs';
 
-type OddsScore = {
-  id: string;
-  sport_key: string;            // "americanfootball_nfl"
-  sport_title: string;
-  commence_time: string;        // ISO
-  completed: boolean;
-  home_team: string;            // "Green Bay Packers"
-  away_team: string;            // "Chicago Bears"
-  scores?: { name: string; score: string | number }[]; // score can be string per docs
+// ESPN team abbreviation -> our short_name mapping for any that differ
+const ESPN_ABBR_MAP: Record<string, string> = {
+  'WSH': 'WAS',
+  'JAX': 'JAC',
 };
 
-function toInt(x: string | number | undefined): number | null {
-  if (x === undefined) return null;
-  const n = typeof x === 'number' ? x : parseInt(x, 10);
-  return Number.isFinite(n) ? n : null;
+function mapAbbr(espn: string): string {
+  return ESPN_ABBR_MAP[espn.toUpperCase()] ?? espn.toUpperCase();
 }
+
+type EspnCompetitor = {
+  homeAway: 'home' | 'away';
+  score: string;
+  team: { abbreviation: string };
+};
+
+type EspnStatus = {
+  type: { completed: boolean; description: string; state: string };
+};
+
+type EspnEvent = {
+  competitions: Array<{
+    competitors: EspnCompetitor[];
+    status: EspnStatus;
+  }>;
+};
 
 export async function GET(req: Request) {
   try {
-    const apiKey = process.env.ODDS_API_KEY;
-    if (!apiKey) return new Response('Missing ODDS_API_KEY', { status: 500 });
+    const url = new URL(req.url);
+    const dryRun = url.searchParams.get('dry') === '1';
 
-    // Pull live + recent scores (Odds API updates roughly every 30s; returns finals up to 3 days old)
+    // Fetch from ESPN — no API key needed
     const resp = await fetch(
-      `https://api.the-odds-api.com/v4/sports/americanfootball_nfl/scores/?daysFrom=3&apiKey=${apiKey}`,
+      'https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard',
       { cache: 'no-store' }
     );
-    if (!resp.ok) return new Response(`OddsAPI ${resp.status}: ${await resp.text()}`, { status: 502 });
 
-    const items = (await resp.json()) as OddsScore[];
+    if (!resp.ok) {
+      return NextResponse.json({ error: `ESPN ${resp.status}` }, { status: 502 });
+    }
 
-    // Build Full Team Name -> short_name map
-    const { data: teams, error: tErr } = await supabaseAdmin
-      .from('teams')
-      .select('name, short_name');
-    if (tErr || !teams) return new Response(`teams error: ${tErr?.message}`, { status: 500 });
+    const data = await resp.json();
+    const events: EspnEvent[] = data.events ?? [];
 
-    const nameToShort = new Map<string, string>();
-    for (const t of teams) nameToShort.set(t.name, t.short_name);
-
-    const urlObj = new URL(req.url);
-    const dryRun = urlObj.searchParams.get('dry') === '1';
-
-    let attempted = 0;
     let updatedLive = 0;
     let updatedFinal = 0;
+    let skipped = 0;
     const notes: string[] = [];
 
-    for (const g of items) {
-      // we only care about games that have a score array (live or final)
-      if (!g.scores || g.scores.length < 2) continue;
+    for (const event of events) {
+      const comp = event.competitions?.[0];
+      if (!comp) continue;
 
-      const hShort = nameToShort.get(g.home_team);
-      const aShort = nameToShort.get(g.away_team);
-      if (!hShort || !aShort) {
-        notes.push(`skip: unmapped ${formatGameLabel(g.away_team, g.home_team)}`);
+      const home = comp.competitors.find((c) => c.homeAway === 'home');
+      const away = comp.competitors.find((c) => c.homeAway === 'away');
+      if (!home || !away) continue;
+
+      const homeShort = mapAbbr(home.team.abbreviation);
+      const awayShort = mapAbbr(away.team.abbreviation);
+      const homeScore = parseInt(home.score, 10);
+      const awayScore = parseInt(away.score, 10);
+      const isCompleted = comp.status.type.completed;
+      const isInProgress = comp.status.type.state === 'in';
+
+      // Skip games that haven't started yet and have no scores
+      if (!isInProgress && !isCompleted) {
+        skipped++;
         continue;
       }
 
-      const hScore = toInt(g.scores.find(s => s.name === g.home_team)?.score);
-      const aScore = toInt(g.scores.find(s => s.name === g.away_team)?.score);
-      if (hScore === null || aScore === null) {
-        notes.push(
-          `skip: missing numeric scores for ${formatGameLabel(g.away_team, g.home_team)}`
-        );
+      if (isNaN(homeScore) || isNaN(awayScore)) {
+        notes.push(`skip: no numeric scores for ${awayShort} @ ${homeShort}`);
+        skipped++;
         continue;
       }
-
-      const year = new Date(g.commence_time).getUTCFullYear();
-      attempted++;
-      const matchupLabel = formatGameLabel(aShort, hShort);
 
       if (dryRun) {
-        notes.push(
-          `would set LIVE ${year} ${matchupLabel} => ${hScore}-${aScore} (completed=${g.completed})`
-        );
+        notes.push(`would update ${awayShort} @ ${homeShort}: ${awayScore}-${homeScore} (final=${isCompleted})`);
         continue;
       }
 
-      // Always write live fields
-      {
-        const { error } = await supabaseAdmin.rpc('set_live_score_by_teams', {
-          p_year: year,
-          p_home_short: hShort,
-          p_away_short: aShort,
-          p_home_score: hScore,
-          p_away_score: aScore,
-          p_completed: g.completed,
-        });
-        if (error) notes.push(`live fail: ${matchupLabel} -> ${error.message}`);
-        else updatedLive++;
+      // Update live scores
+      const { error: liveErr } = await supabaseAdmin.rpc('set_live_score_by_teams', {
+        p_year: new Date().getFullYear(),
+        p_home_short: homeShort,
+        p_away_short: awayShort,
+        p_home_score: homeScore,
+        p_away_score: awayScore,
+        p_completed: isCompleted,
+      });
+
+      if (liveErr) {
+        notes.push(`live fail: ${awayShort} @ ${homeShort} -> ${liveErr.message}`);
+      } else {
+        updatedLive++;
       }
 
-      // If completed, also set your official final scores (one-time)
-      if (g.completed) {
-        const { error } = await supabaseAdmin.rpc('set_final_score_by_teams', {
-          p_year: year,
-          p_home_short: hShort,
-          p_away_short: aShort,
-          p_home_score: hScore,
-          p_away_score: aScore,
+      // If final, write official score too
+      if (isCompleted) {
+        const { error: finalErr } = await supabaseAdmin.rpc('set_final_score_by_teams', {
+          p_year: new Date().getFullYear(),
+          p_home_short: homeShort,
+          p_away_short: awayShort,
+          p_home_score: homeScore,
+          p_away_score: awayScore,
         });
-        if (error) notes.push(`final fail: ${hShort}-${aShort} -> ${error.message}`);
-        else updatedFinal++;
+
+        if (finalErr) {
+          notes.push(`final fail: ${awayShort} @ ${homeShort} -> ${finalErr.message}`);
+        } else {
+          updatedFinal++;
+        }
       }
     }
 
-    return Response.json({ attempted, updatedLive, updatedFinal, notes });
+    return NextResponse.json({
+      source: 'ESPN',
+      total: events.length,
+      skipped,
+      updatedLive,
+      updatedFinal,
+      notes,
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return new Response(msg || 'server error', { status: 500 });
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
